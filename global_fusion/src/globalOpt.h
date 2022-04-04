@@ -22,6 +22,7 @@
 #include <nav_msgs/Path.h>
 #include "LocalCartesian.hpp"
 #include "tic_toc.h"
+#include <fstream>
 
 using namespace std;
 
@@ -49,6 +50,11 @@ private:
 	GeographicLib::LocalCartesian geoConverter;
 	std::mutex mPoseMap;
 	Eigen::Matrix4d WGPS_T_WVIO;
+        Eigen::Matrix4d WGPS_T_WVIO_viz;
+        int update_count;
+        int GTframeCount;
+        std::ofstream outfileOdom;
+        std::ofstream outfileGt;
 	Eigen::Vector3d lastP;
 	Eigen::Quaterniond lastQ;
 	std::thread threadOpt;

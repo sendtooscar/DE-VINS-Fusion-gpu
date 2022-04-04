@@ -18,19 +18,23 @@
 #include <eigen3/Eigen/Geometry>
 #include <iostream>
 #include <stdio.h>
+#include <queue>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 
 GlobalOptimization globalEstimator;
 ros::Publisher pub_global_odometry, pub_global_path, pub_car;
 nav_msgs::Path *global_path;
+double last_vio_t = -1;
+std::queue<sensor_msgs::NavSatFixConstPtr> gpsQueue;
+std::mutex m_buf;
 
 void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w_car)
 {
     visualization_msgs::MarkerArray markerArray_msg;
     visualization_msgs::Marker car_mesh;
     car_mesh.header.stamp = ros::Time(t);
-    car_mesh.header.frame_id = "world";
+    car_mesh.header.frame_id = "worldGPS";
     car_mesh.type = visualization_msgs::Marker::MESH_RESOURCE;
     car_mesh.action = visualization_msgs::Marker::ADD;
     car_mesh.id = 0;
@@ -39,6 +43,7 @@ void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w
 
     Eigen::Matrix3d rot;
     rot << 0, 0, -1, 0, -1, 0, -1, 0, 0;
+    rot << -1, 0, 0, 0, 0, -1, 0, -1, 0; //our dataset
     
     Eigen::Quaterniond Q;
     Q = q_w_car * rot; 
@@ -66,6 +71,13 @@ void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w
 
 void GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
 {
+
+
+     m_buf.lock();
+    gpsQueue.push(GPS_msg);
+    m_buf.unlock();
+
+    /*
     //printf("GPS_callback! \n");
     double t = GPS_msg->header.stamp.toSec();
     //printf("receive GPS with timestamp %f\n", GPS_msg->header.stamp.toSec());
@@ -75,7 +87,7 @@ void GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
     //int numSats = GPS_msg->status.service;
     double pos_accuracy = GPS_msg->position_covariance[0];
     //printf("receive covariance %lf \n", pos_accuracy);
-    globalEstimator.inputGPS(t, latitude, longitude, altitude, pos_accuracy);
+    globalEstimator.inputGPS(t, latitude, longitude, altitude, pos_accuracy);*/
 }
 
 void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
@@ -89,6 +101,40 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
     vio_q.y() = pose_msg->pose.pose.orientation.y;
     vio_q.z() = pose_msg->pose.pose.orientation.z;
     globalEstimator.inputOdom(t, vio_t, vio_q);
+
+    
+    // add GPS factors to the graph
+    m_buf.lock();
+    while(!gpsQueue.empty())
+    {
+        sensor_msgs::NavSatFixConstPtr GPS_msg = gpsQueue.front();
+        double gps_t = GPS_msg->header.stamp.toSec();
+        printf("vio t: %f, gps t: %f \n", t, gps_t);
+        // 10ms sync tolerance
+        //if(gps_t >= t - 0.01 && gps_t <= t + 0.01)
+        if(gps_t >= t - 0.1 && gps_t <= t + 0.1) //TODO: get from config ( this can be larger for unsynced data)  
+        {
+            //printf("receive GPS with timestamp %f\n", GPS_msg->header.stamp.toSec());
+            double latitude = GPS_msg->latitude;
+            double longitude = GPS_msg->longitude;
+            double altitude = GPS_msg->altitude;
+            int fixstatus = GPS_msg->status.status;  //this is 2 for rtk and 
+            double pos_accuracy = GPS_msg->position_covariance[0];
+            if(pos_accuracy > 0 && fixstatus >= 0){
+                //printf("synced| receive covariance %lf | fix status(2:RTK) %i \n", pos_accuracy, fixstatus); // use this to check gps sync errors
+                globalEstimator.inputGPS(t, latitude, longitude, altitude, pos_accuracy); 
+            }
+            gpsQueue.pop();
+            break;
+        }
+        //else if(gps_t < t - 0.01)
+        else if(gps_t < t - 0.1)
+            gpsQueue.pop();
+        //else if(gps_t > t + 0.01)
+        else if(gps_t > t + 0.1)
+            break;
+    }
+    m_buf.unlock();
 
     Eigen::Vector3d global_t;
     Eigen:: Quaterniond global_q;
@@ -117,7 +163,7 @@ int main(int argc, char **argv)
 
     global_path = &globalEstimator.global_path;
 
-    ros::Subscriber sub_GPS = n.subscribe("/gps", 100, GPS_callback);
+    ros::Subscriber sub_GPS = n.subscribe("/fix", 100, GPS_callback);
     ros::Subscriber sub_vio = n.subscribe("/vins_estimator/odometry", 100, vio_callback);
     pub_global_path = n.advertise<nav_msgs::Path>("global_path", 100);
     pub_global_odometry = n.advertise<nav_msgs::Odometry>("global_odometry", 100);

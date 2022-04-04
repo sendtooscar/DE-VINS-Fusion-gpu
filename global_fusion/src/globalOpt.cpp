@@ -11,13 +11,22 @@
 
 #include "globalOpt.h"
 #include "Factors.h"
+#include <tf2_ros/static_transform_broadcaster.h>
+#include <tf2_ros/transform_broadcaster.h>
 
-GlobalOptimization::GlobalOptimization()
+
+GlobalOptimization::GlobalOptimization():
+outfileOdom("resultsOdom.txt", std::ios_base::trunc),
+outfileGt("resultsGt.txt", std::ios_base::trunc)
 {
-	initGPS = false;
+    initGPS = false;
     newGPS = false;
-	WGPS_T_WVIO = Eigen::Matrix4d::Identity();
+    WGPS_T_WVIO = Eigen::Matrix4d::Identity();
+    WGPS_T_WVIO_viz = Eigen::Matrix4d::Identity();
+    update_count =0;
+    GTframeCount = 0;
     threadOpt = std::thread(&GlobalOptimization::optimize, this);
+    
 }
 
 GlobalOptimization::~GlobalOptimization()
@@ -56,7 +65,7 @@ void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quate
 
     geometry_msgs::PoseStamped pose_stamped;
     pose_stamped.header.stamp = ros::Time(t);
-    pose_stamped.header.frame_id = "world";
+    pose_stamped.header.frame_id = "worldGPS";
     pose_stamped.pose.position.x = lastP.x();
     pose_stamped.pose.position.y = lastP.y();
     pose_stamped.pose.position.z = lastP.z();
@@ -66,6 +75,37 @@ void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quate
     pose_stamped.pose.orientation.w = lastQ.w();
     global_path.header = pose_stamped.header;
     global_path.poses.push_back(pose_stamped);
+
+
+    //Publish the worldGPS frame (only perform 100 updates and stop)
+    if (update_count <100){
+        WGPS_T_WVIO_viz = WGPS_T_WVIO; 
+    	update_count++;
+        if (update_count ==100)
+          printf("*********************WGPS_T_WVIO_viz fixed*********************\n");
+    }
+ 
+    static tf2_ros::TransformBroadcaster brOpGPS;
+    geometry_msgs::TransformStamped transformStampedG;
+    transformStampedG.header.stamp = ros::Time(t);
+    transformStampedG.header.frame_id = "worldGPS";    //reference frame
+    transformStampedG.child_frame_id = "world";
+    transformStampedG.transform.translation.x = WGPS_T_WVIO_viz(0,3); //read & send the pos
+    transformStampedG.transform.translation.y = WGPS_T_WVIO_viz(1,3);
+    transformStampedG.transform.translation.z = WGPS_T_WVIO_viz(2,3);
+
+    Eigen::Quaterniond q_upTemp;
+    q_upTemp = Eigen::Quaterniond(WGPS_T_WVIO_viz.block<3, 3>(0, 0));
+    transformStampedG.transform.rotation.x = q_upTemp.x();
+    transformStampedG.transform.rotation.y = q_upTemp.y();
+    transformStampedG.transform.rotation.z = q_upTemp.z();
+    transformStampedG.transform.rotation.w = q_upTemp.w();
+
+    //static_broadcaster.sendTransform(static_transformStamped);
+    brOpGPS.sendTransform(transformStampedG);
+
+
+    
 
     mPoseMap.unlock();
 }
@@ -213,7 +253,7 @@ void GlobalOptimization::updateGlobalPath()
     {
         geometry_msgs::PoseStamped pose_stamped;
         pose_stamped.header.stamp = ros::Time(iter->first);
-        pose_stamped.header.frame_id = "world";
+        pose_stamped.header.frame_id = "worldGPS";
         pose_stamped.pose.position.x = iter->second[0];
         pose_stamped.pose.position.y = iter->second[1];
         pose_stamped.pose.position.z = iter->second[2];
@@ -223,4 +263,99 @@ void GlobalOptimization::updateGlobalPath()
         pose_stamped.pose.orientation.z = iter->second[6];
         global_path.poses.push_back(pose_stamped);
     }
+
+    //save results for KITTI evaluation tool
+    int length = globalPoseMap.size();
+    Eigen::Quaterniond odomQ;
+    Eigen::Vector3d odomP;
+    Eigen::Quaterniond gtQ;
+    Eigen::Vector3d gtP;
+    map<double, vector<double>>::iterator iter2;
+    iter = localPoseMap.begin();
+    iter2 = globalPoseMap.begin();
+     // time sequence check-k  
+    //double time_first = iter->first;
+    for(int j = 0;j < GTframeCount; j++, iter++, iter2++){ // go to the current frame
+    }
+    std::ofstream foutC("resultsOdom.txt", std::ios::app);  
+    std::ofstream foutD("resultsGt.txt", std::ios::app);           
+    for (int i = GTframeCount; i < length; i++, iter++, iter2++)
+    {
+                
+		GTframeCount++;                
+
+                
+                odomP.x() = iter->second[0];
+                odomP.y() = iter->second[1];
+                odomP.z() = iter->second[2];
+                odomQ.w() = iter->second[3];
+                odomQ.x() = iter->second[4];
+                odomQ.y() = iter->second[5];
+                odomQ.z() = iter->second[6];
+                
+                //time sequence check-k 
+		//std::cout <<  iter->first - time_first << "," << odomP.x() <<  "|" ;  // ok correct time squence saved
+   
+		Eigen::Quaterniond globalQ;
+    		globalQ = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomQ;
+    		Eigen::Vector3d globalP = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomP + WGPS_T_WVIO_viz.block<3, 1>(0, 3);
+   		
+     		if(GTframeCount>0)
+    		{
+		Eigen::Matrix3d globalR = globalQ.normalized().toRotationMatrix();   
+	    	foutC.setf(std::ios::fixed, std::ios::floatfield);
+	    	foutC.precision(0);
+		//foutC << header.stamp.toSec() * 1e9 << ",";
+                foutC << GTframeCount << " ";
+		foutC.precision(6);
+		              foutC << globalR(0,0) << " "
+				    << globalR(0,1) << " "
+				    << globalR(0,2) << " "
+				    << globalP.x()  << " "
+				    << globalR(1,0) << " "
+				    << globalR(1,1) << " "
+				    << globalR(1,2) << " "
+				    << globalP.y()  << " "
+				    << globalR(2,0) << " "
+				    << globalR(2,1) << " "
+				    << globalR(2,2) << " "
+				    << globalP.z()  << std::endl;
+    		}
+
+		gtP.x() = iter2->second[0];
+                gtP.y() = iter2->second[1];
+                gtP.z() = iter2->second[2];
+                gtQ.w() = iter2->second[3];
+                gtQ.x() = iter2->second[4];
+                gtQ.y() = iter2->second[5];
+                gtQ.z() = iter2->second[6];
+    	
+   		
+     		if(GTframeCount>0)
+    		{
+		Eigen::Matrix3d gtR = gtQ.normalized().toRotationMatrix();   
+	    	foutD.setf(std::ios::fixed, std::ios::floatfield);
+	    	foutD.precision(0);
+		//foutC << header.stamp.toSec() * 1e9 << ",";
+                foutD << GTframeCount << " ";
+		foutD.precision(6);
+		              foutD << gtR(0,0) << " "
+				    << gtR(0,1) << " "
+				    << gtR(0,2) << " "
+				    << gtP.x()  << " "
+				    << gtR(1,0) << " "
+				    << gtR(1,1) << " "
+				    << gtR(1,2) << " "
+				    << gtP.y()  << " "
+				    << gtR(2,0) << " "
+				    << gtR(2,1) << " "
+				    << gtR(2,2) << " "
+				    << gtP.z()  << std::endl;
+    		}
+    }
+     // time sequence check -k
+    //std::cout <<  std::endl;
+    //std::cout <<  localPoseMap.end()->first <<std::endl;
+    foutC.close();
+    foutD.close();
 }

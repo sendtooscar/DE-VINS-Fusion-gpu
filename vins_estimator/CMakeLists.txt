@@ -17,8 +17,9 @@ find_package(catkin REQUIRED COMPONENTS
     image_transport)
 
 #find_package(OpenCV REQUIRED)
-include(/home/dji/opencv/build/OpenCVConfig.cmake)
+#include(/storage_ssd/opencv-3.4.1/share/OpenCV/OpenCVConfig.cmake)
 #message(WARNING "OpenCV_VERSION: ${OpenCV_VERSION}")
+find_package(OpenCV 3.4.1 REQUIRED PATHS "/storage_ssd/opencv-3.4.1" NO_DEFAULT_PATH)
 
 find_package(Ceres REQUIRED)
 

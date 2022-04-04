@@ -82,6 +82,11 @@ void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
         TicToc processTime;
         processMeasurements();
         printf("process time: %f\n", processTime.toc());
+   //Print VO time to a file
+   std::ofstream foutC("/home/islab/catkin_ws/VOTime.txt", std::ios::app);             //Delete the previous file -ToDO --- check how to replace
+   foutC.setf(std::ios::fixed, std::ios::floatfield);
+   foutC.precision(6);
+   foutC << processTime.toc() << std::endl;
     }
     
 }
