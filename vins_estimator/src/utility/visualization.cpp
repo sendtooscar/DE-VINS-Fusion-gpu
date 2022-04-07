@@ -69,6 +69,32 @@ void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q, co
     odometry.twist.twist.linear.y = V.y();
     odometry.twist.twist.linear.z = V.z();
     pub_latest_odometry.publish(odometry);
+
+
+    // publish fast tf frame body_fast
+    static tf::TransformBroadcaster br;
+    tf::Transform transform;
+    tf::Quaternion q;
+
+    transform.setOrigin(tf::Vector3(P.x(),
+                                    P.y(),
+                                    P.z()));
+    q.setW(Q.w());
+    q.setX(Q.x());
+    q.setY(Q.y());
+    q.setZ(Q.z());
+    transform.setRotation(q);
+    br.sendTransform(tf::StampedTransform(transform, ros::Time(t), "world", "body_fast"));
+    //std::cout << "Publishing tf @: " << ros::Time(t) << std::endl;
+
+
+   // check if available -k
+   /*static tf::TransformListener listener;
+   tf::StampedTransform trans_temp;
+   try{
+   listener.lookupTransform("world","body_fast", ros::Time(0), trans_temp);
+   std::cout << "Recieved tf @: x" << std::endl;
+   }catch(tf::TransformException ex){}*/
 }
 
 void printStatistics(const Estimator &estimator, double t)
@@ -163,8 +189,8 @@ void pubOdometry(const Estimator &estimator, const std_msgs::Header &header)
               << estimator.Vs[WINDOW_SIZE].z() << "," << endl;
         foutC.close();
         Eigen::Vector3d tmp_T = estimator.Ps[WINDOW_SIZE];
-        printf("time: %f, t: %f %f %f q: %f %f %f %f \n", header.stamp.toSec(), tmp_T.x(), tmp_T.y(), tmp_T.z(),
-                                                          tmp_Q.w(), tmp_Q.x(), tmp_Q.y(), tmp_Q.z());
+        //printf("time: %f, t: %f %f %f q: %f %f %f %f \n", header.stamp.toSec(), tmp_T.x(), tmp_T.y(), tmp_T.z(),
+       //                                                   tmp_Q.w(), tmp_Q.x(), tmp_Q.y(), tmp_Q.z());
     }
 }
 

@@ -12,7 +12,12 @@ output_path: "~/output/"
 cam0_calib: "test_payload_cam.yaml"
 image_width: 1440
 image_height: 1080
-   
+
+#Lidar info   
+use_lidar: 1
+point_cloud_topic: "/scan"
+use_dense_cloud: 1  # if 0 uses the current scan only for depth enhancement
+lidar_skip: 3
 
 # Extrinsic parameter between IMU and Camera.
 estimate_extrinsic: 0   # 0  Have an accurate extrinsic parameters. We will trust the following imu^R_cam, imu^T_cam, don't change it.
@@ -26,6 +31,24 @@ body_T_cam0: !!opencv-matrix
            0.99931723, -0.03692628,  0.00123178, -0.04199414,
            0.03693384,  0.99929446, -0.00681642, -0.03693199,
            0, 0, 0, 1]
+
+#Tmatrix from lidar frame to camera frame, cam^T_lidar
+cam0_T_lidar: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [-0.0062, -0.9992, -0.0393, 0.0923, 
+           0.0040,  0.0392, -0.9992, 0.0388, 
+             1.00, -0.0063,  0.0038, -0.074,
+                0,       0,       0,      1 ]
+
+# lidar to camera extrinsic adjustment -  this is the fine tuning for the Lidar expose using dynamic reconfigure to adjust
+lidar_to_cam_tx: 0
+lidar_to_cam_ty: 0
+lidar_to_cam_tz: 0
+lidar_to_cam_rx: -0.1
+lidar_to_cam_ry: 0
+lidar_to_cam_rz: -0.015   #+ve yaw
 
 #Multiple thread support
 multiple_thread: 1

@@ -19,6 +19,7 @@
 #include <opencv2/core/eigen.hpp>
 #include <eigen3/Eigen/Dense>
 #include <eigen3/Eigen/Geometry>
+#include <tf/transform_listener.h>
 
 #include "parameters.h"
 #include "feature_manager.h"

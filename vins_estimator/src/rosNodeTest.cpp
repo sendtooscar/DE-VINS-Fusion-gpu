@@ -29,6 +29,17 @@ queue<sensor_msgs::ImageConstPtr> img0_buf;
 queue<sensor_msgs::ImageConstPtr> img1_buf;
 std::mutex m_buf;
 
+// mtx lock for two threads
+std::mutex mtx_lidar;
+
+// global variable for saving the depthCloud shared between two threads
+pcl::PointCloud<PointType>::Ptr depthCloud(new pcl::PointCloud<PointType>());
+pcl::PointCloud<PointType>::Ptr depthCloudLocal(new pcl::PointCloud<PointType>());
+
+// global variables saving the lidar point cloud
+deque<pcl::PointCloud<PointType>> cloudQueue;
+deque<double> timeQueue;
+ros::Publisher pub_pcl;
 
 void img0_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
@@ -42,6 +53,147 @@ void img1_callback(const sensor_msgs::ImageConstPtr &img_msg)
     m_buf.lock();
     img1_buf.push(img_msg);
     m_buf.unlock();
+}
+
+void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
+{
+ static int lidar_count = -1;
+    if (++lidar_count % (LIDAR_SKIP+1) != 0)
+        return;
+  
+   // 0. listen to transform
+    static tf::TransformListener listener;
+    static tf::StampedTransform transform;
+    try{
+        listener.waitForTransform("world", "body_fast", laser_msg->header.stamp, ros::Duration(0.1));
+        listener.lookupTransform("world", "body_fast", ros::Time(0), transform);
+        //listener.lookupTransform("world", "body_fast", laser_msg->header.stamp, transform);
+        std::cout << "sync_diff"  << laser_msg->header.stamp - transform.stamp_ << std::endl; //k low sync errors
+    } 
+    catch (tf::TransformException ex){
+        /*std::cout << std::endl;
+        std::cout << "lidar no tf" << laser_msg->header.stamp  << std::endl;
+        std::cout << "lidar no tf" << laser_msg->header.stamp - ros::Time(0)  << std::endl;*/
+        ROS_ERROR("lidar no tf");
+        return;
+    }
+
+
+    double xCur, yCur, zCur, rollCur, pitchCur, yawCur;
+    xCur = transform.getOrigin().x();
+    yCur = transform.getOrigin().y();
+    zCur = transform.getOrigin().z();
+    tf::Matrix3x3 m(transform.getRotation());
+    m.getRPY(rollCur, pitchCur, yawCur);
+    Eigen::Affine3f transNow = pcl::getTransformation(xCur, yCur, zCur, rollCur, pitchCur, yawCur);
+    
+   
+
+
+    // 1. convert laser cloud message to pcl
+    pcl::PointCloud<PointType>::Ptr laser_cloud_in(new pcl::PointCloud<PointType>());
+    pcl::fromROSMsg(*laser_msg, *laser_cloud_in);
+
+    // 2. downsample new cloud (save memory)
+    pcl::PointCloud<PointType>::Ptr laser_cloud_in_ds(new pcl::PointCloud<PointType>());
+    static pcl::VoxelGrid<PointType> downSizeFilter;
+    downSizeFilter.setLeafSize(0.2, 0.2, 0.2);
+    downSizeFilter.setInputCloud(laser_cloud_in);
+    downSizeFilter.filter(*laser_cloud_in_ds);
+    *laser_cloud_in = *laser_cloud_in_ds;
+
+    // 3. filter lidar points (only keep points in camera view)
+    pcl::PointCloud<PointType>::Ptr laser_cloud_in_filter(new pcl::PointCloud<PointType>());
+    for (int i = 0; i < (int)laser_cloud_in->size(); ++i)
+    {
+        PointType p = laser_cloud_in->points[i];
+        if (p.x >= 0 && abs(p.y / p.x) <= 10 && abs(p.z / p.x) <= 10)
+            laser_cloud_in_filter->push_back(p);
+    }
+    *laser_cloud_in = *laser_cloud_in_filter;
+
+    // TODO: transform to IMU body frame
+    // 4. offset T_lidar -> T_camera 
+    pcl::PointCloud<PointType>::Ptr laser_cloud_offset(new pcl::PointCloud<PointType>());
+    Eigen::Affine3f transOffset = pcl::getTransformation(L_C_tx, L_C_ty, L_C_tz, L_C_rx, L_C_ry, L_C_rz); // this is only fine tuning adjustment 
+    pcl::transformPointCloud(*laser_cloud_in, *laser_cloud_offset, transOffset);
+    *laser_cloud_in = *laser_cloud_offset;
+
+    
+
+    // 5. transform new cloud into global odom frame
+    pcl::PointCloud<PointType>::Ptr laser_cloud_global(new pcl::PointCloud<PointType>());
+    //trans now is VW_T_B of vins we want VW_T_L = VW_T_B * B_T_C * C_T_L
+    // then the point cloud is correctly transformed to the VW frame
+    Eigen::Matrix4d Tmat_IC;
+    Tmat_IC.setIdentity();   // Set to Identity to make bottom row of Matrix 0,0,0,1
+    Tmat_IC.block<3,3>(0,0) = RIC[0];
+    Tmat_IC.block<3,1>(0,3) = TIC[0];
+
+    Eigen::Matrix4d Tmat_CL;
+    Tmat_CL.setIdentity();   // Set to Identity to make bottom row of Matrix 0,0,0,1
+    Tmat_CL.block<3,3>(0,0) = RCL[0];
+    Tmat_CL.block<3,1>(0,3) = TCL[0];
+   
+    
+    Eigen::Matrix4f Tmat_WBf = transNow.matrix();
+
+    Eigen::Matrix4d Tmat_WB = Tmat_WBf.cast<double>();
+   
+    Eigen::Matrix4d Tmat_IL = Tmat_IC * Tmat_CL;
+    
+    Eigen::Matrix4d Tmat_WL = Tmat_WB * Tmat_IL;   // in LVI code this is done by keeping a body ros frame in tf tree
+    
+    transNow = Tmat_WL.cast<float>(); //converts to affine 3f
+
+    pcl::transformPointCloud(*laser_cloud_in, *laser_cloud_global, transNow);
+
+    // 6. save new cloud
+    double timeScanCur = laser_msg->header.stamp.toSec();
+    cloudQueue.push_back(*laser_cloud_global);
+    timeQueue.push_back(timeScanCur);
+    *depthCloudLocal = *laser_cloud_in;
+
+    // 7. pop old cloud
+    while (!timeQueue.empty())
+    {
+        if (timeScanCur - timeQueue.front() > 5.0)
+        {
+            cloudQueue.pop_front();
+            timeQueue.pop_front();
+        } else {
+            break;
+        }
+    }
+    
+    std::lock_guard<std::mutex> lock(mtx_lidar);
+    
+    // 8. fuse global cloud
+    depthCloud->clear();
+    if (USE_DENSE_CLOUD == 0){
+    	*depthCloud += cloudQueue.back();
+    }else {
+    	for (int i = 0; i < (int)cloudQueue.size(); ++i)
+        	*depthCloud += cloudQueue[i];
+    }
+
+    // 9. downsample global cloud
+    pcl::PointCloud<PointType>::Ptr depthCloudDS(new pcl::PointCloud<PointType>());
+    downSizeFilter.setLeafSize(0.2, 0.2, 0.2);
+    downSizeFilter.setInputCloud(depthCloud);
+    downSizeFilter.filter(*depthCloudDS);
+    *depthCloud = *depthCloudDS;
+
+   //10. visualization for debugging
+    if(true){
+    if (pub_pcl.getNumSubscribers() == 0)
+        return;
+    sensor_msgs::PointCloud2 tempCloud;
+    pcl::toROSMsg(*depthCloud, tempCloud);
+    tempCloud.header.frame_id = "world";
+    pub_pcl.publish(tempCloud);
+    
+    }
 }
 
 
@@ -174,6 +326,8 @@ void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg)
         xyz_uv_velocity << x, y, z, p_u, p_v, velocity_x, velocity_y;
         featureFrame[feature_id].emplace_back(camera_id,  xyz_uv_velocity);
     }
+    //inject depth
+    
     double t = feature_msg->header.stamp.toSec();
     estimator.inputFeature(t, featureFrame);
     return;
@@ -225,9 +379,11 @@ int main(int argc, char **argv)
     registerPub(n);
 
     ros::Subscriber sub_imu = n.subscribe(IMU_TOPIC, 2000, imu_callback, ros::TransportHints().tcpNoDelay());
+    ros::Subscriber sub_lidar = n.subscribe(POINT_CLOUD_TOPIC, 5,    lidar_callback);
     ros::Subscriber sub_feature = n.subscribe("/feature_tracker/feature", 2000, feature_callback);
     ros::Subscriber sub_img0 = n.subscribe(IMAGE0_TOPIC, 100, img0_callback);
     ros::Subscriber sub_img1 = n.subscribe(IMAGE1_TOPIC, 100, img1_callback);
+    pub_pcl = n.advertise<sensor_msgs::PointCloud2> ("debug_cloud", 1);
 
     std::thread sync_thread{sync_process};
     ros::spin();

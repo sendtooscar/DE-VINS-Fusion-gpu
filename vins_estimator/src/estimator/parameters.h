@@ -18,6 +18,21 @@
 #include <fstream>
 #include <map>
 
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/range_image/range_image.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/common/common.h>
+#include <pcl/common/transforms.h>
+#include <pcl/registration/icp.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/filters/filter.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/crop_box.h> 
+#include <pcl_conversions/pcl_conversions.h>
+
+typedef pcl::PointXYZI PointType;
+
 using namespace std;
 
 const double FOCAL_LENGTH = 460.0;
@@ -34,7 +49,16 @@ extern double GYR_N, GYR_W;
 
 extern std::vector<Eigen::Matrix3d> RIC;
 extern std::vector<Eigen::Vector3d> TIC;
+extern std::vector<Eigen::Matrix3d> RCL;
+extern std::vector<Eigen::Vector3d> TCL;
 extern Eigen::Vector3d G;
+
+extern double L_C_tx;
+extern double L_C_ty;
+extern double L_C_tz;
+extern double L_C_rx;
+extern double L_C_ry;
+extern double L_C_rz;
 
 extern double BIAS_ACC_THRESHOLD;
 extern double BIAS_GYR_THRESHOLD;
@@ -44,6 +68,7 @@ extern std::string EX_CALIB_RESULT_PATH;
 extern std::string VINS_RESULT_PATH;
 extern std::string OUTPUT_FOLDER;
 extern std::string IMU_TOPIC;
+extern std::string POINT_CLOUD_TOPIC;
 extern double TD;
 extern int ESTIMATE_TD;
 extern int ROLLING_SHUTTER;
@@ -51,6 +76,9 @@ extern int ROW, COL;
 extern int NUM_OF_CAM;
 extern int STEREO;
 extern int USE_IMU;
+extern int USE_LIDAR;
+extern int LIDAR_SKIP;
+extern int USE_DENSE_CLOUD;
 extern int MULTIPLE_THREAD;
 extern int USE_GPU;
 extern int USE_GPU_ACC_FLOW;

@@ -16,6 +16,16 @@ double GYR_N, GYR_W;
 
 std::vector<Eigen::Matrix3d> RIC;
 std::vector<Eigen::Vector3d> TIC;
+std::vector<Eigen::Matrix3d> RCL;
+std::vector<Eigen::Vector3d> TCL;
+
+
+double L_C_tx;
+double L_C_ty;
+double L_C_tz;
+double L_C_rx;
+double L_C_ry;
+double L_C_rz;
 
 Eigen::Vector3d G{0.0, 0.0, 9.8};
 
@@ -30,11 +40,15 @@ std::string EX_CALIB_RESULT_PATH;
 std::string VINS_RESULT_PATH;
 std::string OUTPUT_FOLDER;
 std::string IMU_TOPIC;
+std::string POINT_CLOUD_TOPIC;
 int ROW, COL;
 double TD;
 int NUM_OF_CAM;
 int STEREO;
 int USE_IMU;
+int USE_LIDAR;
+int LIDAR_SKIP;
+int USE_DENSE_CLOUD;
 int MULTIPLE_THREAD;
 int USE_GPU;
 int USE_GPU_ACC_FLOW;
@@ -92,6 +106,11 @@ void readParameters(std::string config_file)
     SHOW_TRACK = fsSettings["show_track"];
     FLOW_BACK = fsSettings["flow_back"];
 
+    fsSettings["point_cloud_topic"] >> POINT_CLOUD_TOPIC;
+    USE_LIDAR = fsSettings["use_lidar"];
+    USE_DENSE_CLOUD = fsSettings["use_dense_cloud"];
+    LIDAR_SKIP = fsSettings["lidar_skip"];
+  
     MULTIPLE_THREAD = fsSettings["multiple_thread"];
 
     USE_GPU = fsSettings["use_gpu"];
@@ -156,6 +175,22 @@ void readParameters(std::string config_file)
         assert(0);
     }
 
+    if(USE_LIDAR == 1)
+    {
+        cv::Mat cv_T;
+        fsSettings["cam0_T_lidar"] >> cv_T;
+        Eigen::Matrix4d T;
+        cv::cv2eigen(cv_T, T);
+        RCL.push_back(T.block<3, 3>(0, 0));
+        TCL.push_back(T.block<3, 1>(0, 3));
+
+        fsSettings["lidar_to_cam_tx"] >> L_C_tx;
+	fsSettings["lidar_to_cam_ty"] >> L_C_ty;
+	fsSettings["lidar_to_cam_tz"] >> L_C_tz;
+	fsSettings["lidar_to_cam_rx"] >> L_C_rx;
+	fsSettings["lidar_to_cam_ry"] >> L_C_ry;
+	fsSettings["lidar_to_cam_rz"] >> L_C_rz;
+    }
 
     int pn = config_file.find_last_of('/');
     std::string configPath = config_file.substr(0, pn);
