@@ -9,9 +9,9 @@ imu_topic: "/imu/data"
 image0_topic: "/front_camera/image_mono"
 output_path: "~/output/"
 
-cam0_calib: "test_payload_cam.yaml"
-image_width: 1440
-image_height: 1080
+cam0_calib: "payload_cam_front_NRC.yaml"
+image_width: 720
+image_height: 540
 
 #Lidar info   
 use_lidar: 0
@@ -28,10 +28,11 @@ body_T_cam0: !!opencv-matrix
    rows: 4
    cols: 4
    dt: d
-   data: [-0.0009792,   0.00685726,  0.99997601, 0.18648448,
-           0.99931723, -0.03692628,  0.00123178, -0.04199414,
-           0.03693384,  0.99929446, -0.00681642, -0.03693199,
+   data: [-0.04200713,   -0.01166497,  0.99904921, 0.17666233,
+           0.99899047, 0.01544242,  0.04218496, -0.05171531,
+           -0.01591983,  0.99981271, 0.01100451, -0.04656282,
            0, 0, 0, 1]
+
 
 #Multiple thread support
 multiple_thread: 1
@@ -61,7 +62,7 @@ g_norm: 9.803     # gravity magnitude
 
 #unsynchronization parameters
 estimate_td: 0                      # online estimate time offset between camera and imu
-td: -0.02932                        # initial value of time offset. unit s. readed image clock + td = real image clock (IMU clock)
+td: 0.000107532562368                        # initial value of time offset. unit s. readed image clock + td = real image clock (IMU clock)
 # -0.02932 for the un sync data...., +0.006 for synced data (i.e., 6ms capture delay from hardware trigger)
 
 #loop closure parameters

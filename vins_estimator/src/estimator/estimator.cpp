@@ -10,7 +10,8 @@
 #include "estimator.h"
 #include "../utility/visualization.h"
 
-Estimator::Estimator(): f_manager{Rs}
+Estimator::Estimator(ros::NodeHandle* n_in):
+    n(*n_in), f_manager{Rs}, featureTracker{n_in}
 {
     ROS_INFO("init begins");
     clearState();
@@ -49,6 +50,17 @@ void Estimator::setParameter()
     }
 }
 
+void Estimator::inputImage(double t, const cv::Mat &_img,  pcl::PointCloud<PointType>::Ptr& depth_cloud)
+{
+    inputImageCnt++;
+    map<int, vector<pair<int, Eigen::Matrix<double, 8, 1>>>> featureFrame; // this is the feature frame with depth
+
+	
+   // sensor_msgs::ChannelFloat32 depth_of_points = depthRegister->get_depth(img_msg->header.stamp, show_img, depth_cloud_temp, trackerData[0].m_camera, feature_points->points);
+    
+
+}
+
 void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
 {
 //     if(begin_time_count<=0)
@@ -64,6 +76,7 @@ void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
     //     sum_t_feature += featureTrackerTime.toc();
     //     printf("featureTracker time: %f\n", sum_t_feature/(float)inputImageCnt);
     // }
+
     
     if(MULTIPLE_THREAD)  
     {     

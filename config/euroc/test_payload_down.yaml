@@ -9,9 +9,15 @@ imu_topic: "/imu/data"
 image0_topic: "/camera/image_mono"
 output_path: "~/output/"
 
-cam0_calib: "test_payload_cam.yaml"
+cam0_calib: "test_payload_cam_down.yaml"
 image_width: 1440
 image_height: 1080
+
+#Lidar info   
+use_lidar: 0
+point_cloud_topic: "/scan"
+use_dense_cloud: 1  # if 0 uses the current scan only for depth enhancement
+lidar_skip: 3
    
 
 # Extrinsic parameter between IMU and Camera.

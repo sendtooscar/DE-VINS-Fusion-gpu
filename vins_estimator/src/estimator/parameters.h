@@ -18,6 +18,22 @@
 #include <fstream>
 #include <map>
 
+#include <std_msgs/Header.h>
+#include <std_msgs/Bool.h>
+#include <sensor_msgs/Imu.h>
+#include <sensor_msgs/Image.h>
+#include <sensor_msgs/PointCloud.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/image_encodings.h>
+#include <nav_msgs/Odometry.h>
+#include <tf/transform_listener.h>
+
+#include <opencv/cv.h>
+#include <cv_bridge/cv_bridge.h>
+#include <eigen3/Eigen/Dense>
+#include <opencv2/core/eigen.hpp>
+#include <opencv2/highgui/highgui.hpp>
+
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/range_image/range_image.h>
@@ -30,6 +46,25 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/crop_box.h> 
 #include <pcl_conversions/pcl_conversions.h>
+
+#include <vector>
+#include <cmath>
+#include <algorithm>
+#include <queue>
+#include <deque>
+#include <iostream>
+#include <fstream>
+#include <ctime>
+#include <cfloat>
+#include <iterator>
+#include <sstream>
+#include <string>
+#include <limits>
+#include <iomanip>
+#include <array>
+#include <thread>
+#include <mutex>
+#include <cassert>
 
 typedef pcl::PointXYZI PointType;
 
@@ -122,3 +157,9 @@ enum NoiseOrder
     O_AW = 6,
     O_GW = 9
 };
+
+float pointDistance(PointType p);
+
+float pointDistance(PointType p1, PointType p2);
+
+void publishCloud(ros::Publisher *thisPub, pcl::PointCloud<PointType>::Ptr thisCloud, ros::Time thisStamp, std::string thisFrame);

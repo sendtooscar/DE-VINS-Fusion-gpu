@@ -21,7 +21,10 @@
 #include "estimator/parameters.h"
 #include "utility/visualization.h"
 
-Estimator estimator;
+
+//this class is initialized later
+Estimator *estimator;
+
 
 queue<sensor_msgs::ImuConstPtr> imu_buf;
 queue<sensor_msgs::PointCloudConstPtr> feature_buf;
@@ -41,6 +44,9 @@ deque<pcl::PointCloud<PointType>> cloudQueue;
 deque<double> timeQueue;
 ros::Publisher pub_pcl;
 
+// global depth register for obtaining depth of a feature
+DepthRegister *depthRegister;
+
 void img0_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
     m_buf.lock();
@@ -57,6 +63,7 @@ void img1_callback(const sensor_msgs::ImageConstPtr &img_msg)
 
 void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
 {
+ if(USE_LIDAR){
  static int lidar_count = -1;
     if (++lidar_count % (LIDAR_SKIP+1) != 0)
         return;
@@ -194,6 +201,7 @@ void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
     pub_pcl.publish(tempCloud);
     
     }
+ }
 }
 
 
@@ -257,13 +265,14 @@ void sync_process()
             }
             m_buf.unlock();
             if(!image0.empty())
-                estimator.inputImage(time, image0, image1);
+                estimator->inputImage(time, image0, image1);
         }
         else
         {
             cv::Mat image;
             std_msgs::Header header;
             double time = 0;
+            double cloud_time = 0;
             m_buf.lock();
             if(!img0_buf.empty())
             {
@@ -273,8 +282,33 @@ void sync_process()
                 img0_buf.pop();
             }
             m_buf.unlock();
+
+            // get the lidar cloud from the thread
+            pcl::PointCloud<PointType>::Ptr depth_cloud_temp(new pcl::PointCloud<PointType>());
+            mtx_lidar.lock();
+	    *depth_cloud_temp = *depthCloud;
+            //std::cout << "No depth cloud" <<depth_cloud_temp->size()<< std::endl;//ok
+            if (depth_cloud_temp->size()>0){
+       	    	cloud_time = timeQueue.back();
+            }
+            //std::cout << "Depth cloud sync time" << time << std::endl;
+	    mtx_lidar.unlock();
+
+            // check time difference between lidar and image (0.5s limit)
+           // std::cout << "No depth cloud  :" <<!depth_cloud_temp<< std::endl;
+                    
+           if (depth_cloud_temp->size()==0){
+ 	        //std::cout << "No depth cloud"<<depth_cloud_temp->size() << std::endl;
+		}
+	   else {
+                std::cout << "cloud time" <<  cloud_time << std::endl;
+                std::cout << "image time" <<  time << std::endl;
+		std::cout << "Depth cloud sync time" << time - cloud_time << std::endl;
+            }
+
+            // call the feature tracker mono or depth enhanced       
             if(!image.empty())
-                estimator.inputImage(time, image);
+                estimator->inputImage(time, image);
         }
 
         std::chrono::milliseconds dura(2);
@@ -294,7 +328,7 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
     double rz = imu_msg->angular_velocity.z;
     Vector3d acc(dx, dy, dz);
     Vector3d gyr(rx, ry, rz);
-    estimator.inputIMU(t, acc, gyr);
+    estimator->inputIMU(t, acc, gyr);
     return;
 }
 
@@ -329,7 +363,7 @@ void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg)
     //inject depth
     
     double t = feature_msg->header.stamp.toSec();
-    estimator.inputFeature(t, featureFrame);
+    estimator->inputFeature(t, featureFrame);
     return;
 }
 
@@ -344,8 +378,8 @@ void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
         while(!imu_buf.empty())
             imu_buf.pop();
         m_buf.unlock();
-        estimator.clearState();
-        estimator.setParameter();
+        estimator->clearState();
+        estimator->setParameter();
     }
     return;
 }
@@ -354,6 +388,7 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "vins_estimator");
     ros::NodeHandle n("~");
+ 
     ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
 
     if(argc != 2)
@@ -368,7 +403,10 @@ int main(int argc, char **argv)
     printf("config_file: %s\n", argv[1]);
 
     readParameters(config_file);
-    estimator.setParameter();
+
+
+    estimator = new Estimator(&n);
+    estimator->setParameter();
 
 #ifdef EIGEN_DONT_PARALLELIZE
     ROS_DEBUG("EIGEN_DONT_PARALLELIZE");

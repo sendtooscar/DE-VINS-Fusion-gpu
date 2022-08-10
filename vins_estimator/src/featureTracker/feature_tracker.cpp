@@ -45,7 +45,7 @@ void reduceVector(vector<int> &v, vector<uchar> status)
     v.resize(j);
 }
 
-FeatureTracker::FeatureTracker()
+FeatureTracker::FeatureTracker(ros::NodeHandle* n_in):n(*n_in), depthRegister{n_in}
 {
     stereo_cam = 0;
     n_id = 0;

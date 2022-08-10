@@ -6,7 +6,7 @@ imu: 1
 num_of_cam: 1  
 
 imu_topic: "/imu/data"
-image0_topic: "/front_camera/image_mono"
+image0_topic: "/camera/image_mono"
 output_path: "~/output/"
 
 cam0_calib: "test_payload_cam.yaml"
@@ -28,10 +28,11 @@ body_T_cam0: !!opencv-matrix
    rows: 4
    cols: 4
    dt: d
-   data: [-0.0009792,   0.00685726,  0.99997601, 0.18648448,
-           0.99931723, -0.03692628,  0.00123178, -0.04199414,
-           0.03693384,  0.99929446, -0.00681642, -0.03693199,
+   data: [0.0010094,   0.99979495,  0.02022494, -0.26630906,
+           -0.99987154, 0.00068554,  0.01601362, -0.00517727,
+           0.01599647,  -0.0202385, 0.9996672, 0.11500867,
            0, 0, 0, 1]
+
 
 #Multiple thread support
 multiple_thread: 1
@@ -61,7 +62,7 @@ g_norm: 9.803     # gravity magnitude
 
 #unsynchronization parameters
 estimate_td: 0                      # online estimate time offset between camera and imu
-td: -0.02932                        # initial value of time offset. unit s. readed image clock + td = real image clock (IMU clock)
+td: -0.029850858743                        # initial value of time offset. unit s. readed image clock + td = real image clock (IMU clock)
 # -0.02932 for the un sync data...., +0.006 for synced data (i.e., 6ms capture delay from hardware trigger)
 
 #loop closure parameters
