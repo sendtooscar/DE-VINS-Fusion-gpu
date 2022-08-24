@@ -1,5 +1,5 @@
 <launch>
-    
+    <!-- -->
     <!--remap from="/camera/image_mono" to="/camera/mono"/-->
     <param name="robot_description" command="$(find xacro)/xacro $(find vins)/launch/include/config/payload2.urdf.xacro --inorder" />
     <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher1" respawn="true"/>
