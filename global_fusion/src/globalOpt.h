@@ -32,12 +32,16 @@ public:
 	GlobalOptimization();
 	~GlobalOptimization();
 	void inputGPS(double t, double latitude, double longitude, double altitude, double posAccuracy);
+        void inputPPKviz(double t, double latitude, double longitude, double altitude, double posAccuracy);
 	void inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quaterniond OdomQ);
 	void getGlobalOdom(Eigen::Vector3d &odomP, Eigen::Quaterniond &odomQ);
+        void GPS2XYZ(double latitude, double longitude, double altitude, double* xyz);
 	nav_msgs::Path global_path;
+        nav_msgs::Path gps_path; 
+        nav_msgs::Path ppk_path;
 
 private:
-	void GPS2XYZ(double latitude, double longitude, double altitude, double* xyz);
+	
 	void optimize();
 	void updateGlobalPath();
 
@@ -45,6 +49,7 @@ private:
 	map<double, vector<double>> localPoseMap;
 	map<double, vector<double>> globalPoseMap;
 	map<double, vector<double>> GPSPositionMap;
+        map<double, vector<double>> PPKPositionMap;
 	bool initGPS;
 	bool newGPS;
 	GeographicLib::LocalCartesian geoConverter;

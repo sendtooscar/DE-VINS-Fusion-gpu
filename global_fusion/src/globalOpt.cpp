@@ -75,6 +75,8 @@ void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quate
     pose_stamped.pose.orientation.w = lastQ.w();
     global_path.header = pose_stamped.header;
     global_path.poses.push_back(pose_stamped);
+    gps_path.header = pose_stamped.header; 
+    ppk_path.header = pose_stamped.header;
 
 
     //Publish the worldGPS frame (only perform 100 updates and stop)
@@ -84,6 +86,7 @@ void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quate
         if (update_count ==100)
           printf("*********************WGPS_T_WVIO_viz fixed*********************\n");
     }
+    WGPS_T_WVIO_viz = WGPS_T_WVIO;
  
     static tf2_ros::TransformBroadcaster brOpGPS;
     geometry_msgs::TransformStamped transformStampedG;
@@ -123,6 +126,15 @@ void GlobalOptimization::inputGPS(double t, double latitude, double longitude, d
 	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
 	GPSPositionMap[t] = tmp;
     newGPS = true;
+
+}
+
+void GlobalOptimization::inputPPKviz(double t, double latitude, double longitude, double altitude, double posAccuracy)
+{
+	double xyz[3];
+	GPS2XYZ(latitude, longitude, altitude, xyz);
+	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
+	PPKPositionMap[t] = tmp;
 
 }
 
@@ -262,6 +274,42 @@ void GlobalOptimization::updateGlobalPath()
         pose_stamped.pose.orientation.y = iter->second[5];
         pose_stamped.pose.orientation.z = iter->second[6];
         global_path.poses.push_back(pose_stamped);
+    }
+
+    gps_path.poses.clear();
+    map<double, vector<double>>::iterator iter3;
+    //cout << "GPS Map size: "<<GPSPositionMap.size() <<endl;//k
+    for (iter3 = GPSPositionMap.begin(); iter3 != GPSPositionMap.end(); iter3++)
+    {
+        geometry_msgs::PoseStamped pose_stamped;
+        pose_stamped.header.stamp = ros::Time(iter3->first);
+        pose_stamped.header.frame_id = "worldGPS";
+        pose_stamped.pose.position.x = iter3->second[0];
+        pose_stamped.pose.position.y = iter3->second[1];
+        pose_stamped.pose.position.z = iter3->second[2];
+        pose_stamped.pose.orientation.w = 1.0;
+        pose_stamped.pose.orientation.x = 0.0;
+        pose_stamped.pose.orientation.y = 0.0;
+        pose_stamped.pose.orientation.z = 0.0;
+        gps_path.poses.push_back(pose_stamped);
+    }
+
+    ppk_path.poses.clear();
+    map<double, vector<double>>::iterator iter4;
+    //cout << "GPS Map size: "<<GPSPositionMap.size() <<endl;//k
+    for (iter4 = PPKPositionMap.begin(); iter4 != PPKPositionMap.end(); iter4++)
+    {
+        geometry_msgs::PoseStamped pose_stamped;
+        pose_stamped.header.stamp = ros::Time(iter4->first);
+        pose_stamped.header.frame_id = "worldGPS";
+        pose_stamped.pose.position.x = iter4->second[0];
+        pose_stamped.pose.position.y = iter4->second[1];
+        pose_stamped.pose.position.z = iter4->second[2];
+        pose_stamped.pose.orientation.w = 1.0;
+        pose_stamped.pose.orientation.x = 0.0;
+        pose_stamped.pose.orientation.y = 0.0;
+        pose_stamped.pose.orientation.z = 0.0;
+        ppk_path.poses.push_back(pose_stamped);
     }
 
     //save results for KITTI evaluation tool
