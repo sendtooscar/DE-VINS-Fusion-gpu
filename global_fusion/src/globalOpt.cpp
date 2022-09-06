@@ -13,7 +13,7 @@
 #include "Factors.h"
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_broadcaster.h>
-
+# define PI  3.141592653589793238462643383279502884L /* pi */
 
 GlobalOptimization::GlobalOptimization():
 outfileOdom("resultsOdom.txt", std::ios_base::trunc),
@@ -80,13 +80,29 @@ void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quate
 
 
     //Publish the worldGPS frame (only perform 100 updates and stop)
-    if (update_count <100){
+    /*if (update_count <100){
         WGPS_T_WVIO_viz = WGPS_T_WVIO; 
     	update_count++;
-        if (update_count ==100)
+        if (update_count ==100){
           printf("*********************WGPS_T_WVIO_viz fixed*********************\n");
-    }
-    WGPS_T_WVIO_viz = WGPS_T_WVIO;
+        }     
+     }*/
+
+    // manual overide of the orientation 
+    double angle = 63.8;// from mag for bell dataset 1
+    WGPS_T_WVIO_viz << cos(angle*PI/180), -sin(angle*PI/180), 0, 0,
+                       sin(angle*PI/180), cos(angle*PI/180), 0, 0,
+                       0, 0, 1, 0,
+                       0, 0, 0, 1;
+
+    //WGPS_T_WVIO_viz = WGPS_T_WVIO;
+
+    // initialize using compass
+    // wait for compass
+    //get ref mag heading
+    //get current mag heading 
+    // set the heading
+
  
     static tf2_ros::TransformBroadcaster brOpGPS;
     geometry_msgs::TransformStamped transformStampedG;

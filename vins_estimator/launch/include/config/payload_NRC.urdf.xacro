@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<robot name="roboat" xmlns:xacro="http://roboat.org">
+  <xacro:property name="PI" value="3.1415926535897931" />
+
+  <link name="camera"></link>
+
+  <link name="velodyne"> </link>
+  <joint name="velodyne_joint" type="fixed">
+    <parent link="camera" />
+    <child link="velodyne" />
+    <!--origin xyz="-0.0560 0.3639 0.0700" rpy="-1.4292 -1.4493 -0.1365" /-->
+    <origin xyz="-0.0560 0.3639 0.0700" rpy="-1.57 +1.57 -0.0" />
+  </joint> 
+
+</robot>

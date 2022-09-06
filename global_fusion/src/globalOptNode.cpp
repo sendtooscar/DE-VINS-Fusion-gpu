@@ -43,9 +43,13 @@ map<double, vector<double>> GPSPositionMap;
 double last_vio_t = -1;
 std::queue<sensor_msgs::NavSatFixConstPtr> gpsQueue;
 std::mutex m_buf;
-bool rtk_unreliable = true;  //TODO  : send to config file
-bool use_ppk = true;  //TODO  : send to config file
+bool rtk_unreliable = true;  //TODO  : send to config file // to cehck status of the GPS
+bool use_ppk = false;  //TODO  : send to config file
+bool use_frl = true;  //TODO  : send to config file
+bool viz_ppk = false;  //TODO  : send to config file
+bool viz_frl = true;  //TODO  : send to config file
 std::string ppk_pos_file = "/storage_ssd/bell412Dataset1/bell412_dataset1_ppk.pos"; //TODO  : send to config file
+std::string frl_pos_file = "/storage_ssd/bell412Dataset1/bell412_dataset1_frl.pos"; //TODO  : send to config file
 std::string nmeaSentence = {};
 std::string nmea_time;
 boost::posix_time::time_duration nmea_time_pval;
@@ -56,6 +60,7 @@ boost::posix_time::time_duration my_time_of_day;
 
 
 std::ifstream myfile1 (ppk_pos_file);
+std::ifstream myfile2 (frl_pos_file);
 std::string line;
 bool skip_read = false;
 sensor_msgs::NavSatFix fix_ppk_msg;
@@ -102,7 +107,7 @@ void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w
 
 void GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
 {
-    if(use_ppk) return;
+    if(use_ppk || use_frl) return;
 
     m_buf.lock();
     gpsQueue.push(GPS_msg);
@@ -329,6 +334,8 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
     
     //define the variables 
     std::string tempppk,templat,templon,tempalt,fix_ppk_time;
+
+    if(use_ppk || viz_ppk){
     //open file
     if (myfile1.is_open())
     {
@@ -344,34 +351,33 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
 		if(line.at(0) == '%') continue;
 		//cout<<line<<endl;
  
-                //2. extract the position message line
-                //2022/05/25 20:43:10.200   45.325064906  -75.664896317    86.7785   1  28   0.0035   0.0025   0.0064  -0.0005  -0.0015  -0.0021   0.01    7.9
+          //2. extract the position message line
+          //2022/05/25 20:43:10.200   45.325064906  -75.664896317    86.7785   1  28   0.0035   0.0025   0.0064  -0.0005  -0.0015  -0.0021   0.01    7.9
 		std::string tempdate,temptime,templat,templon,tempalt,tempQ,tempnumsat,tempsdn,tempsde,tempsdu,tempsdne,tempsdeu,tempsdun,tempage,tempratio;
-                std::istringstream iss1(line);
-    		iss1 >> tempdate >> temptime >> templat >> templon >> tempalt >> tempQ >> tempnumsat >> tempsdn >> tempsde >> tempsdu >> tempsdne >> tempsdeu >> tempsdun >> tempage >> tempratio;
+          std::istringstream iss1(line);
+    		iss1 >> tempdate >> temptime >> templat >> templon >> tempalt >> tempQ >> tempnumsat >> tempsdn >> tempsde >> tempsdu >> tempsdne >> tempsdeu >> tempsdun >> tempage >>  tempratio;
 		
 		//cout<<"ppk time string:"<<temptime<< " Nmea time: "<<nmea_time_formatted_to_string <<endl;//k
-
 		// TODO:quick check of the UTC date to warn possible errors
 		// convert ros time of nmea stamp to UTC and and check with PPK time
 		
 		// 3.1 Convert the two times to seconds
 		//time value conversions
   		nmea_time_pval  =    boost::posix_time::hours(std::stod(nmea_time_formatted_to_string.substr(0,2))) +
-				     boost::posix_time::minutes(std::stod(nmea_time_formatted_to_string.substr(3,2))) + 
-			             boost::posix_time::seconds(std::stod(nmea_time_formatted_to_string.substr(6,2))) +
+				           boost::posix_time::minutes(std::stod(nmea_time_formatted_to_string.substr(3,2))) + 
+			                boost::posix_time::seconds(std::stod(nmea_time_formatted_to_string.substr(6,2))) +
 		                     boost::posix_time::millisec(std::stod(nmea_time_formatted_to_string.substr(9,2))*10);
 
 		ppk_time_pval  =     boost::posix_time::hours(std::stod(temptime.substr(0,2))) +
-				     boost::posix_time::minutes(std::stod(temptime.substr(3,2))) + 
-			             boost::posix_time::seconds(std::stod(temptime.substr(6,2))-18) + //TODO:GPST to UTC correction
+				           boost::posix_time::minutes(std::stod(temptime.substr(3,2))) + 
+			                boost::posix_time::seconds(std::stod(temptime.substr(6,2))-18) + //TODO:GPST to UTC correction
 		                     boost::posix_time::millisec(std::stod(temptime.substr(9,2))*10);
 		boost::posix_time::time_duration delta = ppk_time_pval-nmea_time_pval;
 		double diff = delta.total_microseconds();
 		//cout<<"ppk time val:"<< ppk_time_pval << " Nmea time val: "<< nmea_time_pval << "|" << diff << endl;//k
 
 		//3.keep reading the file if the nmea time is ahead
-                if (diff<0){
+          if (diff<0){
 		     skip_read = false;
 		     ppk_synced = false;
                      //cout<<"NMEA ahead:"<< ppk_time_pval << " Nmea time val: "<< nmea_time_pval << "|" << diff << endl;
@@ -385,52 +391,160 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
 		     continue;
 		}
 
-                //5.if they match input the GPS data to the optimizer
-                if (diff==0){
+          //5.if they match input the GPS data to the optimizer
+          if (diff==0){
 		     skip_read = false;
 		     ppk_synced = true; 
 
 
-                     ros::Time nmea_ros_time=findRosTimeFromNmea(msg->header.stamp,nmea_time);
+               ros::Time nmea_ros_time=findRosTimeFromNmea(msg->header.stamp,nmea_time);
 		     cout<<"** SYNCED: ppk time val:"<< ppk_time_pval << " Nmea time val: "<< nmea_time_pval << "|" << diff << "|" << nmea_lat << "|" << nmea_lon << "|" << nmea_alt << "|" <<  stof(templat) << "|" <<  stof(templon) << "|" <<  stof(tempalt) << endl;
 		     cout << nmea_ros_time << "|" << msg->header.stamp << endl;
   		     // Create a ppk GPS message
-	             fix_ppk_msg.header = msg->header;
+	          fix_ppk_msg.header = msg->header;
 		     fix_ppk_msg.status.status = 2;
 		     fix_ppk_msg.status.service = 1;
-	             fix_ppk_msg.latitude = stof(templat); // deg
+	          fix_ppk_msg.latitude = stof(templat); // deg
 		     fix_ppk_msg.longitude = stof(templon); // deg
 		     fix_ppk_msg.altitude = stof(tempalt); // m
 		     float sdn = std::stof(tempsdn)*10; // ppk covariances are too tight
 	    	     float sde = std::stof(tempsde)*10;
-	             float sdu = std::stof(tempsdu)*10;
-                     float sdne = std::stof(tempsdne)*10;
+	          float sdu = std::stof(tempsdu)*10;
+               float sdne = std::stof(tempsdne)*10;
 	    	     float sdeu = std::stof(tempsdeu)*10;
-	             float sdun = std::stof(tempsdun)*10;
+	          float sdun = std::stof(tempsdun)*10;
 		     fix_ppk_msg.position_covariance = {sdn, sdne, sdun, sdne, sde, sdeu, sdun, sdeu, sdu};
 		     fix_ppk_msg.position_covariance_type = 3;
 
 		     
 
-                     // append to the ppk path and publish
-                     // visualization only
-                     globalEstimator.inputPPKviz(fix_ppk_msg.header.stamp.toSec(), stof(templat), stof(templon), stof(tempalt), sdn);
-                     //if(nmea_fix==5){   //5 is RTK
-                     //globalEstimator.inputPPKviz(fix_ppk_msg.header.stamp.toSec(), nmea_lat, nmea_lon, nmea_alt, sdn);}
+               // append to the ppk path and publish
+               // visualization only
+               globalEstimator.inputPPKviz(fix_ppk_msg.header.stamp.toSec(), stof(templat), stof(templon), stof(tempalt), sdn);
+
+               //if(nmea_fix==5){   //5 is RTK
+               //globalEstimator.inputPPKviz(fix_ppk_msg.header.stamp.toSec(), nmea_lat, nmea_lon, nmea_alt, sdn);}
 		     
-                     if(use_ppk) {
+               if(use_ppk) {
 			// include in the GPS q
-                     sensor_msgs::NavSatFixConstPtr fix_ppk_msg_const_pointer( new sensor_msgs::NavSatFix(fix_ppk_msg) );
-                     m_buf.lock();
+               sensor_msgs::NavSatFixConstPtr fix_ppk_msg_const_pointer( new sensor_msgs::NavSatFix(fix_ppk_msg) );
+               m_buf.lock();
     		     gpsQueue.push(fix_ppk_msg_const_pointer);
-                     m_buf.unlock();
+               m_buf.unlock();
 		     }	
-		} 
-		 		
-	}
-    }
+		} //synced routine		 		
+	  } // ppk read loop
+    }//check open file
     else std::cout << "Unable to open file1";
     cout<<"---------------------------"<<endl;
+    }//check ppk processing flags
+
+   if(use_frl || viz_frl){
+    //open file
+    if (myfile2.is_open())
+    {
+     	
+ 	bool ppk_synced = false;
+	while (!ppk_synced)
+	{
+		//0. read the next line
+		if (!skip_read){
+		std::getline(myfile1, line);} 
+		
+    		//1. remove the header info in pos file
+		if(line.at(0) == '%') continue;
+		//cout<<line<<endl;
+ 
+          //2. extract the position message line
+          //2022/05/25 20:43:10.200   45.325064906  -75.664896317    86.7785   1  28   0.0035   0.0025   0.0064  -0.0005  -0.0015  -0.0021   0.01    7.9
+          //2022/05/25 20:43:10.200   45.325070885095 	-75.664890525260  117.3329 68 33 0.1869  0.2636 	0.2647   0.0000  0.0000 0.0000 4.00  0.0 0.23  2.03 63.80 0.05 -0.10 -0.05	-0.01 0.02 0.00
+		std::string tempdate,temptime,templat,templon,tempalt,tempQ,tempnumsat,tempsdn,tempsde,tempsdu,tempsdne,tempsdeu,tempsdun,tempage,tempratio;
+          std::string temproll,temppitch,tempyaw,tempomgP,tempomgQ,tempomgR,tempVe,tempVn,tempVu;
+          std::istringstream iss1(line);
+    		iss1 >> tempdate >> temptime >> templat >> templon >> tempalt >> tempQ >> tempnumsat >> tempsdn >> tempsde >> tempsdu >> tempsdne >> tempsdeu >> tempsdun >> tempage >>  tempratio >> temproll >> temppitch >> tempyaw >> tempomgP >> tempomgQ >> tempomgR >> tempVe >> tempVn >> tempVu;
+		
+		//cout<<"ppk time string:"<<temptime<< " Nmea time: "<<nmea_time_formatted_to_string <<endl;//k
+		// TODO:quick check of the UTC date to warn possible errors
+		// convert ros time of nmea stamp to UTC and and check with PPK time
+		
+		// 3.1 Convert the two times to seconds
+		//time value conversions
+  		nmea_time_pval  =    boost::posix_time::hours(std::stod(nmea_time_formatted_to_string.substr(0,2))) +
+				           boost::posix_time::minutes(std::stod(nmea_time_formatted_to_string.substr(3,2))) + 
+			                boost::posix_time::seconds(std::stod(nmea_time_formatted_to_string.substr(6,2))) +
+		                     boost::posix_time::millisec(std::stod(nmea_time_formatted_to_string.substr(9,2))*10);
+
+		ppk_time_pval  =     boost::posix_time::hours(std::stod(temptime.substr(0,2))) +
+				           boost::posix_time::minutes(std::stod(temptime.substr(3,2))) + 
+			                boost::posix_time::seconds(std::stod(temptime.substr(6,2))-18) + //TODO:GPST to UTC correction
+		                     boost::posix_time::millisec(std::stod(temptime.substr(9,2))*10);
+		boost::posix_time::time_duration delta = ppk_time_pval-nmea_time_pval;
+		double diff = delta.total_microseconds();
+		//cout<<"ppk time val:"<< ppk_time_pval << " Nmea time val: "<< nmea_time_pval << "|" << diff << endl;//k
+
+		//3.keep reading the file if the nmea time is ahead
+          if (diff<0){
+		     skip_read = false;
+		     ppk_synced = false;
+                     //cout<<"NMEA ahead:"<< ppk_time_pval << " Nmea time val: "<< nmea_time_pval << "|" << diff << endl;
+		     continue;
+		}
+
+		//4.do not read the next line if the ppk time is ahead
+		if (diff>0){
+		     skip_read = true;
+		     ppk_synced = true; 
+		     continue;
+		}
+
+          //5.if they match input the GPS data to the optimizer
+          if (diff==0){
+		     skip_read = false;
+		     ppk_synced = true; 
+
+
+               ros::Time nmea_ros_time=findRosTimeFromNmea(msg->header.stamp,nmea_time);
+		     cout<<"** SYNCED: frl time val:"<< ppk_time_pval << " Nmea time val: "<< nmea_time_pval << "|" << diff << "|" << nmea_lat << "|" << nmea_lon << "|" << nmea_alt << "|" <<  stof(templat) << "|" <<  stof(templon) << "|" <<  stof(tempalt) << endl;
+		     cout << nmea_ros_time << "|" << msg->header.stamp << endl;
+  		     // Create a ppk GPS message
+	          fix_ppk_msg.header = msg->header;
+		     fix_ppk_msg.status.status = 2;
+		     fix_ppk_msg.status.service = 1;
+	          fix_ppk_msg.latitude = stof(templat); // deg
+		     fix_ppk_msg.longitude = stof(templon); // deg
+		     fix_ppk_msg.altitude = stof(tempalt); // m
+		     float sdn = std::stof(tempsdn)*10; // ppk covariances are too tight
+	    	     float sde = std::stof(tempsde)*10;
+	          float sdu = std::stof(tempsdu)*10;
+               float sdne = std::stof(tempsdne)*10;
+	    	     float sdeu = std::stof(tempsdeu)*10;
+	          float sdun = std::stof(tempsdun)*10;
+		     fix_ppk_msg.position_covariance = {sdn, sdne, sdun, sdne, sde, sdeu, sdun, sdeu, sdu};
+		     fix_ppk_msg.position_covariance_type = 3;
+
+		     
+
+               // append to the ppk path and publish
+               // visualization only
+               globalEstimator.inputPPKviz(fix_ppk_msg.header.stamp.toSec(), stof(templat), stof(templon), stof(tempalt), sdn);
+
+               //if(nmea_fix==5){   //5 is RTK
+               //globalEstimator.inputPPKviz(fix_ppk_msg.header.stamp.toSec(), nmea_lat, nmea_lon, nmea_alt, sdn);}
+		     
+               if(use_frl) {
+			// include in the GPS q
+               sensor_msgs::NavSatFixConstPtr fix_ppk_msg_const_pointer( new sensor_msgs::NavSatFix(fix_ppk_msg) );
+               m_buf.lock();
+    		     gpsQueue.push(fix_ppk_msg_const_pointer);
+               m_buf.unlock();
+		     }	
+		} //synced routine		 		
+	  } // frl read loop
+    }//check open file
+    else std::cout << "Unable to open file2";
+    cout<<"---------------------------"<<endl;
+    }//check frl processing flags
+   
 }
 
 int main(int argc, char **argv)
