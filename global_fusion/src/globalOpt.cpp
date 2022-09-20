@@ -145,6 +145,22 @@ void GlobalOptimization::inputGPS(double t, double latitude, double longitude, d
 
 }
 
+void GlobalOptimization::inputRot(double t, double q_w, double q_x, double q_y, double q_z, double rotAccuracy)
+{
+	vector<double> tmp{q_w, q_x, q_y, q_z, rotAccuracy};
+	globalRotMap[t] = tmp;
+     newRot = true;
+
+}
+
+void GlobalOptimization::inputMag(double t, double mag_x, double mag_y, double mag_z, double magAccuracy)
+{
+	vector<double> tmp{mag_x, mag_y, mag_z, magAccuracy};
+	magMap[t] = tmp;
+     newMag = true;
+
+}
+
 void GlobalOptimization::inputPPKviz(double t, double latitude, double longitude, double altitude, double posAccuracy)
 {
 	double xyz[3];
@@ -158,9 +174,10 @@ void GlobalOptimization::optimize()
 {
     while(true)
     {
-        if(newGPS)
+        if(newGPS || newRot)
         {
             newGPS = false;
+            newRot = false;
             printf("global optimization\n");
             TicToc globalOptimizationTime;
 
@@ -196,7 +213,7 @@ void GlobalOptimization::optimize()
                 problem.AddParameterBlock(t_array[i], 3);
             }
 
-            map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS;
+            map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS, iterRot, iterMag;
             int i = 0;
             for (iterVIO = localPoseMap.begin(); iterVIO != localPoseMap.end(); iterVIO++, i++)
             {
@@ -224,7 +241,7 @@ void GlobalOptimization::optimize()
                     problem.AddResidualBlock(vio_function, NULL, q_array[i], t_array[i], q_array[i+1], t_array[i+1]);
                 }
                 //gps factor
-                double t = iterVIO->first;
+                double t = iterVIO->first;// TODO: check if this should be iterVIONext  
                 iterGPS = GPSPositionMap.find(t);
                 if (iterGPS != GPSPositionMap.end())
                 {
@@ -234,6 +251,81 @@ void GlobalOptimization::optimize()
                     problem.AddResidualBlock(gps_function, loss_function, t_array[i]);
 
                 }
+                // O- Rot factor (FULL AHRS INPUT) --k
+                /*iterRot = globalRotMap.find(t);
+                if (iterRot != globalRotMap.end())
+                {
+                    ceres::CostFunction* rot_function = RError::Create(iterRot->second[0], iterRot->second[1], 
+                                                                       iterRot->second[2], iterRot->second[3],0.01);
+                    //printf("inverse weight %f \n", iterGPS->second[3]);
+                    problem.AddResidualBlock(rot_function, loss_function, q_array[i]);
+
+                }*/
+
+			// O- Rot factor (Yaw INPUT) - k possible lag ~1-2 second
+               /*iterRot = globalRotMap.find(t);
+               if (iterRot != globalRotMap.end())
+               {
+				// take the quaternion
+				double w_q_i[4] = {iterRot->second[0], iterRot->second[1], iterRot->second[2], iterRot->second[3]};
+				// convert to yaw
+                    double siny_cosp = 2 * (w_q_i[0] * w_q_i[3] + w_q_i[1] * w_q_i[2]);
+    				double cosy_cosp = 1 - 2 * (w_q_i[2] * w_q_i[2] + w_q_i[3] * w_q_i[3]);
+    				double yaw_meas = atan2(siny_cosp, cosy_cosp);
+                    //cout << "FRL yaw | " << yaw_meas*180.0/M_PI;
+		
+				//add factor
+                    ceres::CostFunction* rot_function = YError::Create(yaw_meas,0.01);
+                    problem.AddResidualBlock(rot_function, loss_function, q_array[i]);	
+
+               }*/
+
+			//O- mag factor as heading
+               iterMag = magMap.find(t);
+               if (iterMag != magMap.end())
+               {
+				double mag_meas[3] = {iterMag->second[0], iterMag->second[1], iterMag->second[2]};
+				//cout << "| Xsense Mag | " << mag_meas[0] <<  "," << mag_meas[1] <<  ","<< mag_meas[2] ;
+				
+				// this has the vio attitude info
+				Eigen::Quaterniond q_vio = Eigen::Quaterniond(iterVIO->second[3], iterVIO->second[4], iterVIO->second[5], iterVIO->second[6]);
+                    Eigen::Vector3d euler = q_vio.toRotationMatrix().eulerAngles(2, 1, 0);
+				
+				//adjust mag reading                    
+				Eigen::Quaterniond q_vio_no_yaw =  Eigen::AngleAxisd(0.0, Eigen::Vector3d::UnitZ())
+    				* Eigen::AngleAxisd(euler[1], Eigen::Vector3d::UnitY())
+    				* Eigen::AngleAxisd(euler[2], Eigen::Vector3d::UnitX());
+
+				Eigen::Vector3d mag_meas_flat = q_vio_no_yaw * Eigen::Vector3d((mag_meas[0]-0.1829)/1.2073,(mag_meas[1]+0.1630)/1.1773,(mag_meas[2]+0.3197)/1.2761);
+
+
+				double mag_ref[3]= {0.3633,0.0639,-0.4980}; 
+				
+                    double yaw_mag = atan2(mag_ref[1],mag_ref[0]) - atan2(mag_meas_flat[1],mag_meas_flat[0]);
+
+
+
+                    //cout << "| Vio q | " << q_vio.w() << "," << q_vio.x() << "," << q_vio.y() << "," << q_vio.z()  <<"| Vio eul | "<< atan2(sin(euler[0]),cos(euler[0])) <<  "," << atan2(sin(euler[1]),cos(euler[1])) <<  ","<< atan2(sin(euler[2]),cos(euler[2]))  << "," << -90.0 + yaw_mag/M_PI*180 << endl;
+				
+				// remove attitude of the mag vector
+
+				// use the magnetic reference to find the yaw - true heading
+
+				// add factor -error
+                    //ceres::CostFunction* rot_function = YError::Create(-3*M_PI/2+yaw_mag,0.05);
+                    //problem.AddResidualBlock(rot_function, loss_function, q_array[i]);
+
+
+                    Eigen::Quaterniond q_meas =  Eigen::AngleAxisd(-3*M_PI/2+yaw_mag, Eigen::Vector3d::UnitZ())
+    				* Eigen::AngleAxisd(euler[1], Eigen::Vector3d::UnitY())
+    				* Eigen::AngleAxisd(euler[2], Eigen::Vector3d::UnitX());
+                    ceres::CostFunction* rot_function = RError::Create(q_meas.w(), q_meas.x(), 
+                                                                       q_meas.y(), q_meas.z(),0.01);
+                    //printf("inverse weight %f \n", iterGPS->second[3]);
+                    problem.AddResidualBlock(rot_function, loss_function, q_array[i]);
+				//char test;
+				//cin >> test;
+               }
 
             }
             //mPoseMap.unlock();

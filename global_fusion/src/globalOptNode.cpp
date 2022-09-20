@@ -32,6 +32,8 @@
 #include <fstream>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/posix_time/posix_time_io.hpp>
+#include <geometry_msgs/QuaternionStamped.h>
+#include <geometry_msgs/Vector3Stamped.h>
 
 
 GlobalOptimization globalEstimator;
@@ -42,10 +44,15 @@ nav_msgs::Path *ppk_path; // this is used to plot the gps_message path
 map<double, vector<double>> GPSPositionMap;
 double last_vio_t = -1;
 std::queue<sensor_msgs::NavSatFixConstPtr> gpsQueue;
+std::queue<geometry_msgs::QuaternionStampedConstPtr> rotQueue;
+std::queue<geometry_msgs::Vector3StampedConstPtr> magQueue;
 std::mutex m_buf;
 bool rtk_unreliable = true;  //TODO  : send to config file // to cehck status of the GPS
 bool use_ppk = false;  //TODO  : send to config file
-bool use_frl = true;  //TODO  : send to config file
+bool use_frl = false;  //TODO  : send to config file
+bool use_frl_rot = true; // this one makes it use only the rotation
+bool use_mag_head = true;// this one performs a heading only update
+bool use_vio_atti = false;// this one performs a ref vector update (good for roll pitch global update using vio)
 bool viz_ppk = false;  //TODO  : send to config file
 bool viz_frl = true;  //TODO  : send to config file
 std::string ppk_pos_file = "/storage_ssd/bell412Dataset1/bell412_dataset1_ppk.pos"; //TODO  : send to config file
@@ -64,6 +71,7 @@ std::ifstream myfile2 (frl_pos_file);
 std::string line;
 bool skip_read = false;
 sensor_msgs::NavSatFix fix_ppk_msg;
+geometry_msgs::QuaternionStamped rot_msg;
 
 void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w_car)
 {
@@ -80,6 +88,7 @@ void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w
     Eigen::Matrix3d rot;
     rot << 0, 0, -1, 0, -1, 0, -1, 0, 0;
     rot << -1, 0, 0, 0, 0, -1, 0, -1, 0; //our dataset
+    
     
     Eigen::Quaterniond Q;
     Q = q_w_car * rot; 
@@ -107,7 +116,7 @@ void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w
 
 void GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
 {
-    if(use_ppk || use_frl) return;
+    if(use_ppk || use_frl || use_frl_rot) return;
 
     m_buf.lock();
     gpsQueue.push(GPS_msg);
@@ -166,6 +175,16 @@ void GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
     
 }
 
+void mag_callback(const geometry_msgs::Vector3Stamped::ConstPtr &mag_msg)
+{
+    if (use_mag_head){
+	    m_buf.lock();
+	    magQueue.push(mag_msg);
+	    m_buf.unlock();
+    }
+}
+
+
 void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
 {
     //printf("vio_callback! \n");
@@ -215,6 +234,63 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
         else if(gps_t > t + 0.1)
             break;
     }
+
+    // process the rot buffer
+    while(!rotQueue.empty())
+    {
+        geometry_msgs::QuaternionStampedConstPtr rot_msg = rotQueue.front();
+        double rot_t = rot_msg->header.stamp.toSec();
+        //printf("vio t: %f, rot t: %f \n", t, rot_t);
+        // 10ms sync tolerance
+        //if(gps_t >= t - 0.01 && gps_t <= t + 0.01)
+        if(rot_t >= t - 0.1 && rot_t <= t + 0.1) //TODO: get from config ( this can be larger for unsynced data)  
+        {
+            //printf("receive GPS with timestamp %f\n", GPS_msg->header.stamp.toSec());
+            double quat_w = rot_msg->quaternion.w;
+            double quat_x = rot_msg->quaternion.x;
+            double quat_y = rot_msg->quaternion.y;
+            double quat_z = rot_msg->quaternion.z;
+            double quat_accuracy = 0.01;
+            globalEstimator.inputRot(t, quat_w, quat_x, quat_y, quat_z, quat_accuracy);
+            rotQueue.pop();
+            break;
+        }
+        //else if(gps_t < t - 0.01)
+        else if(rot_t < t - 0.1)
+            rotQueue.pop();
+        else if(rot_t > t + 0.1)
+            break;
+    }
+
+    // process the mag buffer
+    while(!magQueue.empty())
+    {
+        geometry_msgs::Vector3StampedConstPtr mag_msg = magQueue.front();
+        double mag_t = mag_msg->header.stamp.toSec();
+        
+        // 10ms sync tolerance
+        //if(gps_t >= t - 0.01 && gps_t <= t + 0.01)
+        if(mag_t >= t - 0.05 && mag_t <= t + 0.05) //TODO: get from config ( this can be larger for unsynced data)  
+        {
+            //printf("receive GPS with timestamp %f\n", GPS_msg->header.stamp.toSec());
+            printf("vio t: %f, mag t: %f \n", t, mag_t);
+            double mag_x = mag_msg->vector.x;
+            double mag_y = mag_msg->vector.y;
+            double mag_z = mag_msg->vector.z;
+            double mag_accuracy = 0.1;
+            globalEstimator.inputMag(t, mag_x, mag_y, mag_z, mag_accuracy);
+            magQueue.pop();
+            break;
+        }
+        //else if(gps_t < t - 0.01)
+        else if(mag_t < t - 0.05)
+            magQueue.pop();
+        else if(mag_t > t + 0.05)
+            break;
+    }
+
+    
+    
     m_buf.unlock();
 
     Eigen::Vector3d global_t;
@@ -439,7 +515,7 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
     cout<<"---------------------------"<<endl;
     }//check ppk processing flags
 
-   if(use_frl || viz_frl){
+   if(use_frl || viz_frl || use_frl_rot){
     //open file
     if (myfile2.is_open())
     {
@@ -449,7 +525,7 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
 	{
 		//0. read the next line
 		if (!skip_read){
-		std::getline(myfile1, line);} 
+		std::getline(myfile2, line);} 
 		
     		//1. remove the header info in pos file
 		if(line.at(0) == '%') continue;
@@ -522,7 +598,25 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
 		     fix_ppk_msg.position_covariance = {sdn, sdne, sdun, sdne, sde, sdeu, sdun, sdeu, sdu};
 		     fix_ppk_msg.position_covariance_type = 3;
 
-		     
+		     //create the quaternion msg
+               rot_msg.header = msg->header;
+			// convert euler to quaternion yusing eigen
+			//Roll pitch and yaw in Radians
+			//double roll = 1.5707, pitch = 0, yaw = 0.707; // k verified   
+               //cout<<temproll<<temppitch<<tempyaw<<endl;
+               double roll =stod(temproll)*M_PI / 180, pitch = stod(temppitch)*M_PI / 180, yaw = stod(tempyaw)*M_PI / 180; 
+			Eigen::Quaterniond quat;
+			quat = Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX()) * Eigen::AngleAxisd(-M_PI/2.0, Eigen::Vector3d::UnitZ())  //to ENU
+			* Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ())
+    			* Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY())
+    			* Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
+               rot_msg.quaternion.w = quat.w(); 
+			rot_msg.quaternion.x = quat.x();
+			rot_msg.quaternion.y = quat.y();
+			rot_msg.quaternion.z = quat.z();
+               //cout << quat.w()<<quat.x()<<quat.y()<<quat.z() << endl;
+               //cin.get();
+
 
                // append to the ppk path and publish
                // visualization only
@@ -537,7 +631,14 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
                m_buf.lock();
     		     gpsQueue.push(fix_ppk_msg_const_pointer);
                m_buf.unlock();
-		     }	
+		     }
+
+               if(use_frl_rot){
+				geometry_msgs::QuaternionStampedConstPtr rot_msg_const_pointer(new geometry_msgs::QuaternionStamped(rot_msg));
+				m_buf.lock();
+	    		     rotQueue.push(rot_msg_const_pointer);
+		          m_buf.unlock();			
+			}	
 		} //synced routine		 		
 	  } // frl read loop
     }//check open file
@@ -560,6 +661,7 @@ int main(int argc, char **argv)
     ros::Subscriber sub_nmea = n.subscribe("/nmea_sentence", 100, nmeaCallback);
     ros::Subscriber sub_GPS = n.subscribe("/fix", 100, GPS_callback);
     ros::Subscriber sub_vio = n.subscribe("/vins_estimator/odometry", 100, vio_callback);
+    ros::Subscriber sub_imu = n.subscribe("/imu/mag", 100, mag_callback);
     pub_global_path = n.advertise<nav_msgs::Path>("global_path", 100);
     pub_gps_path = n.advertise<nav_msgs::Path>("gps_path", 100);
     pub_ppk_path = n.advertise<nav_msgs::Path>("ppk_path", 100);

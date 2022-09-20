@@ -36,6 +36,8 @@ public:
 	void inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quaterniond OdomQ);
 	void getGlobalOdom(Eigen::Vector3d &odomP, Eigen::Quaterniond &odomQ);
         void GPS2XYZ(double latitude, double longitude, double altitude, double* xyz);
+     void inputRot(double t, double q_w, double q_x, double q_y, double q_z, double rotAccuracy);
+     void inputMag(double t, double mag_x, double mag_y, double mag_z, double magAccuracy);
 	nav_msgs::Path global_path;
         nav_msgs::Path gps_path; 
         nav_msgs::Path ppk_path;
@@ -48,10 +50,14 @@ private:
 	// format t, tx,ty,tz,qw,qx,qy,qz
 	map<double, vector<double>> localPoseMap;
 	map<double, vector<double>> globalPoseMap;
+     map<double, vector<double>> globalRotMap;
 	map<double, vector<double>> GPSPositionMap;
-        map<double, vector<double>> PPKPositionMap;
+     map<double, vector<double>> PPKPositionMap;
+     map<double, vector<double>> magMap;
 	bool initGPS;
 	bool newGPS;
+     bool newRot;
+     bool newMag;
 	GeographicLib::LocalCartesian geoConverter;
 	std::mutex mPoseMap;
 	Eigen::Matrix4d WGPS_T_WVIO;

@@ -12,6 +12,7 @@
 #pragma once
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
+#include <cmath>
 
 template <typename T> inline
 void QuaternionInverse(const T q[4], T q_inverse[4])
@@ -48,6 +49,87 @@ struct TError
 	double t_x, t_y, t_z, var;
 
 };
+
+struct RError
+{
+	RError(double q_w, double q_x, double q_y, double q_z, double var)
+				  :q_w(q_w), q_x(q_x), q_y(q_y), q_z(q_z), var(var){}
+
+	template <typename T>
+	bool operator()(const T* w_q_i, T* residuals) const
+	{
+		T meas_q[4];
+		meas_q[0] = T(q_w); 
+		meas_q[1] = T(q_x);
+		meas_q[2] = T(q_y);
+		meas_q[3] = T(q_z);
+
+		T meas_q_inv[4];
+		QuaternionInverse(meas_q, meas_q_inv);
+
+		T error_q[4];
+		ceres::QuaternionProduct(meas_q_inv, w_q_i, error_q); 
+
+		residuals[0] = T(2) * error_q[1] / T(var);
+		residuals[1] = T(2) * error_q[2] / T(var);
+		residuals[2] = T(2) * error_q[3] / T(var);
+
+		return true;
+	}
+
+	static ceres::CostFunction* Create(const double q_w, const double q_x, const double q_y, const double q_z, const double var) 
+	{
+	  return (new ceres::AutoDiffCostFunction<RError, 3, 4>(
+	          	new RError(q_w, q_x, q_y, q_z, var)));
+	}
+
+	double q_w, q_x, q_y, q_z, var;
+
+};
+
+struct YError  //takes two quaternions and finds the yaw residual 
+{
+	YError(double yaw, double var)
+				  :yaw(yaw), var(var){}
+
+	template <typename T>
+	bool operator()(const T* w_q_i, T* residuals) const
+	{    
+          //convert measured yaw to a quaternion
+          T meas_q[4];
+		T axis_angle[3] = {T(0), T(0), T(yaw)};
+  		ceres::AngleAxisToQuaternion(axis_angle, meas_q);
+
+  		// convert the state to a no yaw quaternion
+		T q_no_yaw[4];
+          T siny_cosp = T(2) * (w_q_i[0] * w_q_i[3] + w_q_i[1] * w_q_i[2]);
+    		T cosy_cosp = T(1) - T(2) * (w_q_i[2] * w_q_i[2] + w_q_i[3] * w_q_i[3]);
+    		T yaw_est = atan2(siny_cosp, cosy_cosp);
+          T axis_angle_est[3] = {T(0), T(0), yaw_est};
+		ceres::AngleAxisToQuaternion(axis_angle_est, q_no_yaw);
+          
+          // calculate the residual
+		T meas_q_inv[4];
+		QuaternionInverse(meas_q, meas_q_inv);
+
+		T error_q[4];
+		ceres::QuaternionProduct(meas_q_inv, q_no_yaw, error_q); 
+
+		residuals[0] = T(2) * error_q[3] / T(var);
+
+		return true;
+	}
+
+	static ceres::CostFunction* Create(const double yaw, const double var) 
+	{
+	  return (new ceres::AutoDiffCostFunction<YError, 1, 4>(
+	          	new YError(yaw, var)));
+	}
+
+	double yaw, var;
+
+};
+
 
 struct RelativeRTError
 {
