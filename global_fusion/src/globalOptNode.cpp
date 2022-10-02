@@ -37,10 +37,11 @@
 
 
 GlobalOptimization globalEstimator;
-ros::Publisher pub_global_odometry, pub_global_path, pub_gps_path, pub_ppk_path, pub_car;
+ros::Publisher pub_global_odometry, pub_global_path, pub_gps_path, pub_ppk_path, pub_frl_path, pub_car;
 nav_msgs::Path *global_path;
 nav_msgs::Path *gps_path; // this is used to plot the gps_message path
 nav_msgs::Path *ppk_path; // this is used to plot the gps_message path
+nav_msgs::Path *frl_path;
 map<double, vector<double>> GPSPositionMap;
 double last_vio_t = -1;
 std::queue<sensor_msgs::NavSatFixConstPtr> gpsQueue;
@@ -48,9 +49,10 @@ std::queue<geometry_msgs::QuaternionStampedConstPtr> rotQueue;
 std::queue<geometry_msgs::Vector3StampedConstPtr> magQueue;
 std::mutex m_buf;
 bool rtk_unreliable = true;  //TODO  : send to config file // to cehck status of the GPS
+bool use_gps = false;  // uses the raw rtk gps from fix
 bool use_ppk = false;  //TODO  : send to config file
 bool use_frl = false;  //TODO  : send to config file
-bool use_frl_rot = true; // this one makes it use only the rotation
+bool use_frl_rot = false; // this one makes it use only the rotation
 bool use_mag_head = true;// this one performs a heading only update
 bool use_vio_atti = false;// this one performs a ref vector update (good for roll pitch global update using vio)
 bool viz_ppk = false;  //TODO  : send to config file
@@ -112,11 +114,11 @@ void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w
     car_mesh.scale.z = major_scale;
     markerArray_msg.markers.push_back(car_mesh);
     pub_car.publish(markerArray_msg);
-}
+}	
 
 void GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
 {
-    if(use_ppk || use_frl || use_frl_rot) return;
+    if(!use_gps) return;
 
     m_buf.lock();
     gpsQueue.push(GPS_msg);
@@ -312,6 +314,7 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
     pub_global_path.publish(*global_path);
     pub_gps_path.publish(*gps_path);
     pub_ppk_path.publish(*ppk_path);
+    pub_frl_path.publish(*frl_path);
     publish_car_model(t, global_t, global_q);
 }
 
@@ -552,7 +555,7 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
 
 		ppk_time_pval  =     boost::posix_time::hours(std::stod(temptime.substr(0,2))) +
 				           boost::posix_time::minutes(std::stod(temptime.substr(3,2))) + 
-			                boost::posix_time::seconds(std::stod(temptime.substr(6,2))-18) + //TODO:GPST to UTC correction
+			                boost::posix_time::seconds(std::stod(temptime.substr(6,2))-18+1.25) + //TODO:GPST to UTC correction: manualy found delay using matlab (1.25s)
 		                     boost::posix_time::millisec(std::stod(temptime.substr(9,2))*10);
 		boost::posix_time::time_duration delta = ppk_time_pval-nmea_time_pval;
 		double diff = delta.total_microseconds();
@@ -620,7 +623,8 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
 
                // append to the ppk path and publish
                // visualization only
-               globalEstimator.inputPPKviz(fix_ppk_msg.header.stamp.toSec(), stof(templat), stof(templon), stof(tempalt), sdn);
+               //globalEstimator.inputPPKviz(fix_ppk_msg.header.stamp.toSec(), stof(templat), stof(templon), stof(tempalt), sdn);
+			globalEstimator.inputFRLviz(fix_ppk_msg.header.stamp.toSec(), stof(templat), stof(templon), stof(tempalt),quat.w(),quat.x(),quat.y(),quat.z());
 
                //if(nmea_fix==5){   //5 is RTK
                //globalEstimator.inputPPKviz(fix_ppk_msg.header.stamp.toSec(), nmea_lat, nmea_lon, nmea_alt, sdn);}
@@ -656,6 +660,7 @@ int main(int argc, char **argv)
     global_path = &globalEstimator.global_path;
     gps_path = &globalEstimator.gps_path;
     ppk_path = &globalEstimator.ppk_path;
+    frl_path = &globalEstimator.frl_path;
 
    
     ros::Subscriber sub_nmea = n.subscribe("/nmea_sentence", 100, nmeaCallback);
@@ -665,6 +670,7 @@ int main(int argc, char **argv)
     pub_global_path = n.advertise<nav_msgs::Path>("global_path", 100);
     pub_gps_path = n.advertise<nav_msgs::Path>("gps_path", 100);
     pub_ppk_path = n.advertise<nav_msgs::Path>("ppk_path", 100);
+    pub_frl_path = n.advertise<nav_msgs::Path>("frl_path", 100);
     pub_global_odometry = n.advertise<nav_msgs::Odometry>("global_odometry", 100);
     pub_car = n.advertise<visualization_msgs::MarkerArray>("car_model", 100);
     ros::spin();

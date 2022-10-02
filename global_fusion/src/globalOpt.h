@@ -33,14 +33,17 @@ public:
 	~GlobalOptimization();
 	void inputGPS(double t, double latitude, double longitude, double altitude, double posAccuracy);
         void inputPPKviz(double t, double latitude, double longitude, double altitude, double posAccuracy);
+     void inputFRLviz(double t, double latitude, double longitude, double altitude, double w, double x, double y, double z);
 	void inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quaterniond OdomQ);
 	void getGlobalOdom(Eigen::Vector3d &odomP, Eigen::Quaterniond &odomQ);
         void GPS2XYZ(double latitude, double longitude, double altitude, double* xyz);
      void inputRot(double t, double q_w, double q_x, double q_y, double q_z, double rotAccuracy);
      void inputMag(double t, double mag_x, double mag_y, double mag_z, double magAccuracy);
 	nav_msgs::Path global_path;
-        nav_msgs::Path gps_path; 
-        nav_msgs::Path ppk_path;
+     nav_msgs::Path gps_path; 
+     nav_msgs::Path ppk_path;
+     nav_msgs::Path frl_path;
+	//double last_GPS=0; //rav
 
 private:
 	
@@ -53,6 +56,7 @@ private:
      map<double, vector<double>> globalRotMap;
 	map<double, vector<double>> GPSPositionMap;
      map<double, vector<double>> PPKPositionMap;
+     map<double, vector<double>> FRLPoseMap;
      map<double, vector<double>> magMap;
 	bool initGPS;
 	bool newGPS;
@@ -66,8 +70,10 @@ private:
         int GTframeCount;
         std::ofstream outfileOdom;
         std::ofstream outfileGt;
+	   std::ofstream outfileVINS;   //rav
+	   std::ofstream outfileGPS;    //rav
+	   std::ofstream outfileFusion; //rav
 	Eigen::Vector3d lastP;
 	Eigen::Quaterniond lastQ;
 	std::thread threadOpt;
-
 };

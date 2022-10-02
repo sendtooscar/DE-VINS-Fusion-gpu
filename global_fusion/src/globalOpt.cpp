@@ -15,9 +15,21 @@
 #include <tf2_ros/transform_broadcaster.h>
 # define PI  3.141592653589793238462643383279502884L /* pi */
 
+//R------------------------------R//
+bool writeToFile = false; //save text files for evaluation
+int updateGlobalPathCount = 0;
+int optcounter = 0;
+int ppkPosCounter = 0;
+int vinsPosCounter = 0;
+double last_GPS=0;
+//R------------------------------R//
+
 GlobalOptimization::GlobalOptimization():
 outfileOdom("resultsOdom.txt", std::ios_base::trunc),
-outfileGt("resultsGt.txt", std::ios_base::trunc)
+outfileGt("resultsGt.txt", std::ios_base::trunc),
+outfileVINS("VINS_bell412_dataset1.txt", std::ios_base::trunc),
+outfileGPS("PPK_bell412_dataset1.txt", std::ios_base::trunc),
+outfileFusion("Fusion_bell412_dataset1.txt", std::ios_base::trunc)
 {
     initGPS = false;
     newGPS = false;
@@ -53,6 +65,33 @@ void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quate
     					     OdomQ.w(), OdomQ.x(), OdomQ.y(), OdomQ.z()};
     localPoseMap[t] = localPose;
 
+	//R--------------------------R//
+	if(writeToFile)
+	{
+		//write file - VINS
+    		Eigen::Matrix3d odomR = OdomQ.normalized().toRotationMatrix();
+    		std::ofstream foutE("VINS_bell412_dataset1.txt", std::ios::app); 
+    		vinsPosCounter++;
+    		foutE.setf(std::ios::fixed, std::ios::floatfield);
+    		foutE.precision(0);
+    		foutE << vinsPosCounter << " ";
+    		foutE.precision(9);
+    		foutE << t  << " "
+           << odomR(0,0) << " "
+           << odomR(0,1) << " "
+           << odomR(0,2) << " "
+            << OdomP.x()  << " "
+            << odomR(1,0) << " "
+            << odomR(1,1) << " "
+            << odomR(1,2) << " "
+            << OdomP.y()  << " "
+            << odomR(2,0) << " "
+            << odomR(2,1) << " "
+            << odomR(2,2) << " "
+            << OdomP.z()  << std::endl;	
+	}
+	//R--------------------------R//
+
 
     Eigen::Quaterniond globalQ;
     globalQ = WGPS_T_WVIO.block<3, 3>(0, 0) * OdomQ;
@@ -77,6 +116,7 @@ void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quate
     global_path.poses.push_back(pose_stamped);
     gps_path.header = pose_stamped.header; 
     ppk_path.header = pose_stamped.header;
+    frl_path.header = pose_stamped.header;
 
 
     //Publish the worldGPS frame (only perform 100 updates and stop)
@@ -141,7 +181,9 @@ void GlobalOptimization::inputGPS(double t, double latitude, double longitude, d
 	GPS2XYZ(latitude, longitude, altitude, xyz);
 	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
 	GPSPositionMap[t] = tmp;
-    newGPS = true;
+     newGPS = true;
+
+
 
 }
 
@@ -168,17 +210,43 @@ void GlobalOptimization::inputPPKviz(double t, double latitude, double longitude
 	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
 	PPKPositionMap[t] = tmp;
 
+	//R----------------------R//
+     last_GPS=0;
+	std::ofstream foutF("PPK_bell412_dataset1.txt", std::ios::app);
+    	//std::ofstream foutF("GPS_LH.txt", std::ios::app); 
+    	ppkPosCounter++;
+    	foutF.setf(std::ios::fixed, std::ios::floatfield);
+    	foutF.precision(0);
+    	foutF << ppkPosCounter << " ";
+    	foutF.precision(9);
+    	foutF << t  << " "
+          << xyz[0]  << " "
+          << xyz[1]  << " "
+          << xyz[2]  << std::endl;
+     last_GPS=t;
+	std::cout << t << std::endl;
+	//R----------------------R//
+
+
+}
+
+void GlobalOptimization::inputFRLviz(double t, double latitude, double longitude, double altitude, double w , double x,  double y,  double z)
+{
+	double xyz[3];
+	GPS2XYZ(latitude, longitude, altitude, xyz);
+	vector<double> tmp{xyz[0], xyz[1], xyz[2], w, x, y, z};
+	FRLPoseMap[t] = tmp;
 }
 
 void GlobalOptimization::optimize()
 {
     while(true)
     {
-        if(newGPS || newRot)
+        if(newGPS || newRot || newMag)
         {
-            newGPS = false;
-            newRot = false;
-            printf("global optimization\n");
+            printf("global optimization %d,%d,%d\n",newGPS,newRot,newMag);
+            
+            
             TicToc globalOptimizationTime;
 
             ceres::Problem problem;
@@ -212,7 +280,8 @@ void GlobalOptimization::optimize()
                 problem.AddParameterBlock(q_array[i], 4, local_parameterization);
                 problem.AddParameterBlock(t_array[i], 3);
             }
-
+            
+          
             map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS, iterRot, iterMag;
             int i = 0;
             for (iterVIO = localPoseMap.begin(); iterVIO != localPoseMap.end(); iterVIO++, i++)
@@ -240,8 +309,12 @@ void GlobalOptimization::optimize()
                                                                                 0.1, 0.01);
                     problem.AddResidualBlock(vio_function, NULL, q_array[i], t_array[i], q_array[i+1], t_array[i+1]);
                 }
+
+
                 //gps factor
                 double t = iterVIO->first;// TODO: check if this should be iterVIONext  
+                
+                if(newGPS){
                 iterGPS = GPSPositionMap.find(t);
                 if (iterGPS != GPSPositionMap.end())
                 {
@@ -250,9 +323,11 @@ void GlobalOptimization::optimize()
                     //printf("inverse weight %f \n", iterGPS->second[3]);
                     problem.AddResidualBlock(gps_function, loss_function, t_array[i]);
 
-                }
+                }}//newGPS
+
+
                 // O- Rot factor (FULL AHRS INPUT) --k
-                /*iterRot = globalRotMap.find(t);
+                if(newRot){iterRot = globalRotMap.find(t);
                 if (iterRot != globalRotMap.end())
                 {
                     ceres::CostFunction* rot_function = RError::Create(iterRot->second[0], iterRot->second[1], 
@@ -260,10 +335,11 @@ void GlobalOptimization::optimize()
                     //printf("inverse weight %f \n", iterGPS->second[3]);
                     problem.AddResidualBlock(rot_function, loss_function, q_array[i]);
 
-                }*/
-
+                }}
+			
 			// O- Rot factor (Yaw INPUT) - k possible lag ~1-2 second
-               /*iterRot = globalRotMap.find(t);
+               /*if(newRot){
+               iterRot = globalRotMap.find(t);
                if (iterRot != globalRotMap.end())
                {
 				// take the quaternion
@@ -278,14 +354,16 @@ void GlobalOptimization::optimize()
                     ceres::CostFunction* rot_function = YError::Create(yaw_meas,0.01);
                     problem.AddResidualBlock(rot_function, loss_function, q_array[i]);	
 
-               }*/
+               }}*///newRot
 
+              
 			//O- mag factor as heading
+               if(newMag){
                iterMag = magMap.find(t);
                if (iterMag != magMap.end())
                {
 				double mag_meas[3] = {iterMag->second[0], iterMag->second[1], iterMag->second[2]};
-				//cout << "| Xsense Mag | " << mag_meas[0] <<  "," << mag_meas[1] <<  ","<< mag_meas[2] ;
+				//cout << "| Xsense Mag | " << mag_meas[0] <<  "," << mag_meas[1] <<  ","<< mag_meas[2] <<t <<"'" << magMap.size() ;
 				
 				// this has the vio attitude info
 				Eigen::Quaterniond q_vio = Eigen::Quaterniond(iterVIO->second[3], iterVIO->second[4], iterVIO->second[5], iterVIO->second[6]);
@@ -296,10 +374,12 @@ void GlobalOptimization::optimize()
     				* Eigen::AngleAxisd(euler[1], Eigen::Vector3d::UnitY())
     				* Eigen::AngleAxisd(euler[2], Eigen::Vector3d::UnitX());
 
-				Eigen::Vector3d mag_meas_flat = q_vio_no_yaw * Eigen::Vector3d((mag_meas[0]-0.1829)/1.2073,(mag_meas[1]+0.1630)/1.1773,(mag_meas[2]+0.3197)/1.2761);
+				//Eigen::Vector3d mag_meas_flat = q_vio_no_yaw * Eigen::Vector3d((mag_meas[0]-0.1829)/1.2073,(mag_meas[1]+0.1630)/1.1773,(mag_meas[2]+0.3197)/1.2761); //manual calib
+                    Eigen::Vector3d mag_meas_flat = q_vio_no_yaw * Eigen::Vector3d((mag_meas[0]-0.2435)/1.3211,(mag_meas[1]+0.1588)/1.3241,(mag_meas[2]+1.8277)/2.2852); // using frl and declination data
 
 
-				double mag_ref[3]= {0.3633,0.0639,-0.4980}; 
+				//double mag_ref[3]= {0.3633,0.0639,-0.4980}; //manual calib
+                    double mag_ref[3]= {0.3338,0.0884,-0.9385};  // using frl and declination data
 				
                     double yaw_mag = atan2(mag_ref[1],mag_ref[0]) - atan2(mag_meas_flat[1],mag_meas_flat[0]);
 
@@ -316,7 +396,7 @@ void GlobalOptimization::optimize()
                     //problem.AddResidualBlock(rot_function, loss_function, q_array[i]);
 
 
-                    Eigen::Quaterniond q_meas =  Eigen::AngleAxisd(-3*M_PI/2+yaw_mag, Eigen::Vector3d::UnitZ())
+                    Eigen::Quaterniond q_meas =  Eigen::AngleAxisd(-3*M_PI/2+yaw_mag, Eigen::Vector3d::UnitZ()) // this +90 or - 270 is needed due to baing caliberated for NWU and missing wrap to pi
     				* Eigen::AngleAxisd(euler[1], Eigen::Vector3d::UnitY())
     				* Eigen::AngleAxisd(euler[2], Eigen::Vector3d::UnitX());
                     ceres::CostFunction* rot_function = RError::Create(q_meas.w(), q_meas.x(), 
@@ -325,13 +405,17 @@ void GlobalOptimization::optimize()
                     problem.AddResidualBlock(rot_function, loss_function, q_array[i]);
 				//char test;
 				//cin >> test;
-               }
+               }}//newMag
 
             }
             //mPoseMap.unlock();
+            newGPS = false;
+            newRot = false;
+            newMag = false;
+          
             ceres::Solve(options, &problem, &summary);
             //std::cout << summary.BriefReport() << "\n";
-
+        
             // update global pose
             //mPoseMap.lock();
             iter = globalPoseMap.begin();
@@ -354,8 +438,10 @@ void GlobalOptimization::optimize()
             	    WGPS_T_WVIO = WGPS_T_body * WVIO_T_body.inverse();
             	}
             }
+          
             updateGlobalPath();
-            //printf("global time %f \n", globalOptimizationTime.toc());
+          
+		  //printf("global time %f \n", globalOptimizationTime.toc());
             mPoseMap.unlock();
         }
         std::chrono::milliseconds dura(2000);
@@ -383,7 +469,7 @@ void GlobalOptimization::updateGlobalPath()
         pose_stamped.pose.orientation.z = iter->second[6];
         global_path.poses.push_back(pose_stamped);
     }
-
+ 
     gps_path.poses.clear();
     map<double, vector<double>>::iterator iter3;
     //cout << "GPS Map size: "<<GPSPositionMap.size() <<endl;//k
@@ -401,7 +487,7 @@ void GlobalOptimization::updateGlobalPath()
         pose_stamped.pose.orientation.z = 0.0;
         gps_path.poses.push_back(pose_stamped);
     }
-
+  
     ppk_path.poses.clear();
     map<double, vector<double>>::iterator iter4;
     //cout << "GPS Map size: "<<GPSPositionMap.size() <<endl;//k
@@ -419,6 +505,26 @@ void GlobalOptimization::updateGlobalPath()
         pose_stamped.pose.orientation.z = 0.0;
         ppk_path.poses.push_back(pose_stamped);
     }
+  
+    frl_path.poses.clear();
+    map<double, vector<double>>::iterator iter5;
+    for (iter5 = FRLPoseMap.begin(); iter5 != FRLPoseMap.end(); iter5++)
+    {
+        geometry_msgs::PoseStamped pose_stamped;
+        pose_stamped.header.stamp = ros::Time(iter5->first);
+        pose_stamped.header.frame_id = "worldGPS";
+        pose_stamped.pose.position.x = iter5->second[0];
+        pose_stamped.pose.position.y = iter5->second[1];
+        pose_stamped.pose.position.z = iter5->second[2];
+        pose_stamped.pose.orientation.w = iter5->second[3];
+        pose_stamped.pose.orientation.x = iter5->second[4];
+        pose_stamped.pose.orientation.y = iter5->second[5];
+        pose_stamped.pose.orientation.z = iter5->second[6];
+        frl_path.poses.push_back(pose_stamped);
+    }
+   
+	//save the path here when value > 6769
+	updateGlobalPathCount++;
 
     //save results for KITTI evaluation tool
     int length = globalPoseMap.size();
@@ -427,10 +533,34 @@ void GlobalOptimization::updateGlobalPath()
     Eigen::Quaterniond gtQ;
     Eigen::Vector3d gtP;
     map<double, vector<double>>::iterator iter2;
+    
+    //fusion vs vins
     iter = localPoseMap.begin();
     iter2 = globalPoseMap.begin();
+
+   
+
+
      // time sequence check-k  
     //double time_first = iter->first;
+
+	//R---------------------------R//
+	//to save full map
+	Eigen::Quaterniond odomQAll;
+	Eigen::Vector3d odomPAll;
+	//local pose
+	map<double, vector<double>>::iterator iter_lOdom;
+	iter_lOdom = localPoseMap.begin();
+	//global pose
+	map<double, vector<double>>::iterator iter_gOdom;
+	iter_gOdom = globalPoseMap.begin();
+	//write the whole map to a text file
+	map<double, vector<double>>::iterator iterFull_gOdom;
+	iterFull_gOdom = globalPoseMap.begin();
+	//test opt count
+	int printOnceInTerminal = 1;
+	//R---------------------------R//
+
     for(int j = 0;j < GTframeCount; j++, iter++, iter2++){ // go to the current frame
     }
     std::ofstream foutC("resultsOdom.txt", std::ios::app);  
@@ -456,29 +586,86 @@ void GlobalOptimization::updateGlobalPath()
     		globalQ = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomQ;
     		Eigen::Vector3d globalP = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomP + WGPS_T_WVIO_viz.block<3, 1>(0, 3);
    		
-     		if(GTframeCount>0)
+     	if(GTframeCount>0)
     		{
-		Eigen::Matrix3d globalR = globalQ.normalized().toRotationMatrix();   
-	    	foutC.setf(std::ios::fixed, std::ios::floatfield);
-	    	foutC.precision(0);
-		//foutC << header.stamp.toSec() * 1e9 << ",";
-                foutC << GTframeCount << " ";
-		foutC.precision(6);
-		              foutC << globalR(0,0) << " "
-				    << globalR(0,1) << " "
-				    << globalR(0,2) << " "
-				    << globalP.x()  << " "
-				    << globalR(1,0) << " "
-				    << globalR(1,1) << " "
-				    << globalR(1,2) << " "
-				    << globalP.y()  << " "
-				    << globalR(2,0) << " "
-				    << globalR(2,1) << " "
-				    << globalR(2,2) << " "
-				    << globalP.z()  << std::endl;
+			Eigen::Matrix3d globalR = globalQ.normalized().toRotationMatrix();   
+		    	foutC.setf(std::ios::fixed, std::ios::floatfield);
+		    	foutC.precision(0);
+			//foutC << header.stamp.toSec() * 1e9 << ",";
+		           foutC << GTframeCount << " ";
+			foutC.precision(6);
+				         foutC << globalR(0,0) << " "
+					    << globalR(0,1) << " "
+					    << globalR(0,2) << " "
+					    << globalP.x()  << " "
+					    << globalR(1,0) << " "
+					    << globalR(1,1) << " "
+					    << globalR(1,2) << " "
+					    << globalP.y()  << " "
+					    << globalR(2,0) << " "
+					    << globalR(2,1) << " "
+					    << globalR(2,2) << " "
+					    << globalP.z()  << std::endl;
+
+			//R----------------------------------R//
+			if(writeToFile)
+			{
+				if(printOnceInTerminal){
+					printOnceInTerminal = 0;
+                    	std::cout << "Map Update Counter:  " << updateGlobalPathCount << '\n';
+					std::cout << std::to_string(last_GPS) << std::endl;
+                	}
+				if(updateGlobalPathCount >= 10) //bell412_dataset1 - 149|bell412_dataset5 - 136 fusion| dataset3 - 150 | dataset4 - 155
+                	//if(0) //quarry1-102 | quarry2 - 132 (start-450 stop-269) | quarry3-240
+                	{
+		               int GTframeCountFull = 0;
+		               //std::ofstream foutG("Fusion_LH.txt", std::ios::app);
+		               std::ofstream foutG("Fusion_bell412_dataset1.txt", std::ios::app);
+		               for(iterFull_gOdom = globalPoseMap.begin(); iterFull_gOdom != globalPoseMap.end(); iterFull_gOdom++)
+		               {
+		                   //read map
+		                   odomPAll.x() = iterFull_gOdom->second[0];
+		                   odomPAll.y() = iterFull_gOdom->second[1];
+		                   odomPAll.z() = iterFull_gOdom->second[2];
+		                   odomQAll.w() = iterFull_gOdom->second[3];
+		                   odomQAll.x() = iterFull_gOdom->second[4];
+		                   odomQAll.y() = iterFull_gOdom->second[5];
+		                   odomQAll.z() = iterFull_gOdom->second[6];
+
+		                   //calculate pose
+		                   Eigen::Quaterniond globalQAll;
+		                   globalQAll = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomQAll;
+		                   Eigen::Vector3d globalPAll = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomPAll + WGPS_T_WVIO_viz.block<3, 1>(0, 3);
+		                   Eigen::Matrix3d globalRAll = globalQAll.normalized().toRotationMatrix();  
+		                   //std::cout << "Gloabal Rotm: " << globalRAll << std::endl;
+
+		                   GTframeCountFull++;
+		                   foutG.setf(std::ios::fixed, std::ios::floatfield);
+		                   foutG.precision(0);
+		                   foutG << GTframeCountFull << " ";
+		                   foutG.precision(9);
+					    //std::cout << std::to_string(last_GPS) << " " << ros::Time(last_GPS) << std::endl;
+		                   foutG << std::to_string(last_GPS) << " " << "OK" //added time - check
+		                       << globalRAll(0,0) << " "
+		                       << globalRAll(0,1) << " "
+		                       << globalRAll(0,2) << " "
+		                       << globalPAll.x()  << " "
+		                       << globalRAll(1,0) << " "
+		                       << globalRAll(1,1) << " "
+		                       << globalRAll(1,2) << " "
+		                       << globalPAll.y()  << " "
+		                       << globalRAll(2,0) << " "
+		                       << globalRAll(2,1) << " "
+		                       << globalRAll(2,2) << " "
+		                       << globalPAll.z()  << std::endl;
+		               }
+               	}
+
+			}
+			//R-------------------------------R//
     		}
 
-		gtP.x() = iter2->second[0];
+			 gtP.x() = iter2->second[0];
                 gtP.y() = iter2->second[1];
                 gtP.z() = iter2->second[2];
                 gtQ.w() = iter2->second[3];
@@ -487,7 +674,7 @@ void GlobalOptimization::updateGlobalPath()
                 gtQ.z() = iter2->second[6];
     	
    		
-     		if(GTframeCount>0)
+     	if(GTframeCount>0)
     		{
 		Eigen::Matrix3d gtR = gtQ.normalized().toRotationMatrix();   
 	    	foutD.setf(std::ios::fixed, std::ios::floatfield);
