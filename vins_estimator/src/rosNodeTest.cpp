@@ -30,19 +30,25 @@ queue<sensor_msgs::ImuConstPtr> imu_buf;
 queue<sensor_msgs::PointCloudConstPtr> feature_buf;
 queue<sensor_msgs::ImageConstPtr> img0_buf;
 queue<sensor_msgs::ImageConstPtr> img1_buf;
-std::mutex m_buf;
+std::queue<sensor_msgs::PointCloud2ConstPtr> fullPointsBuf;
+std::mutex m_buf;// visual inertial processing mutex lock
 
-// mtx lock for two threads
-std::mutex mtx_lidar;
+// mtx lock for two areas
+std::mutex mtx_lidar; //mtx_lidar is for lidar processing
 
 // global variable for saving the depthCloud shared between two threads
 pcl::PointCloud<PointType>::Ptr depthCloud(new pcl::PointCloud<PointType>());
 pcl::PointCloud<PointType>::Ptr depthCloudLocal(new pcl::PointCloud<PointType>());
+pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
+double timeLaserCloudFullRes = 0;
+int skipFrameNum = 5;
+bool systemInited = false;
 
 // global variables saving the lidar point cloud
 deque<pcl::PointCloud<PointType>> cloudQueue;
 deque<double> timeQueue;
 ros::Publisher pub_pcl;
+ros::Publisher pubLaserCloudFullRes; 
 
 // global depth register for obtaining depth of a feature
 DepthRegister *depthRegister;
@@ -60,6 +66,7 @@ void img1_callback(const sensor_msgs::ImageConstPtr &img_msg)
     img1_buf.push(img_msg);
     m_buf.unlock();
 }
+
 
 void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
 {
@@ -110,19 +117,20 @@ void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
     *laser_cloud_in = *laser_cloud_in_ds;
 
     // 3. filter lidar points (only keep points in camera view)
-    pcl::PointCloud<PointType>::Ptr laser_cloud_in_filter(new pcl::PointCloud<PointType>());
+    /*pcl::PointCloud<PointType>::Ptr laser_cloud_in_filter(new pcl::PointCloud<PointType>());
     for (int i = 0; i < (int)laser_cloud_in->size(); ++i)
     {
         PointType p = laser_cloud_in->points[i];
         if (p.x >= 0 && abs(p.y / p.x) <= 10 && abs(p.z / p.x) <= 10)
             laser_cloud_in_filter->push_back(p);
     }
-    *laser_cloud_in = *laser_cloud_in_filter;
+    *laser_cloud_in = *laser_cloud_in_filter;*/
 
     // TODO: transform to IMU body frame
     // 4. offset T_lidar -> T_camera 
     pcl::PointCloud<PointType>::Ptr laser_cloud_offset(new pcl::PointCloud<PointType>());
     Eigen::Affine3f transOffset = pcl::getTransformation(L_C_tx, L_C_ty, L_C_tz, L_C_rx, L_C_ry, L_C_rz); // this is only fine tuning adjustment 
+    cout << transOffset.matrix() <<endl;
     pcl::transformPointCloud(*laser_cloud_in, *laser_cloud_offset, transOffset);
     *laser_cloud_in = *laser_cloud_offset;
 
@@ -292,7 +300,7 @@ void sync_process()
        	    	cloud_time = timeQueue.back();
             }
             //std::cout << "Depth cloud sync time" << time << std::endl;
-	    mtx_lidar.unlock();
+	       mtx_lidar.unlock();
 
             // check time difference between lidar and image (0.5s limit)
            // std::cout << "No depth cloud  :" <<!depth_cloud_temp<< std::endl;
@@ -301,9 +309,9 @@ void sync_process()
  	        //std::cout << "No depth cloud"<<depth_cloud_temp->size() << std::endl;
 		}
 	   else {
-                std::cout << "cloud time" <<  cloud_time << std::endl;
-                std::cout << "image time" <<  time << std::endl;
-		std::cout << "Depth cloud sync time" << time - cloud_time << std::endl;
+                //std::cout << "cloud time" <<  cloud_time << std::endl;
+               // std::cout << "image time" <<  time << std::endl;
+		//std::cout << "Depth cloud sync time" << time - cloud_time << std::endl;
             }
 
             // call the feature tracker mono or depth enhanced       
@@ -384,6 +392,49 @@ void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
     return;
 }
 
+
+void sync_process_lidar(){
+     int frameCount = 0;
+	while(1){
+         
+		
+		if (!fullPointsBuf.empty()){
+          TicToc t_process;
+                mtx_lidar.lock();
+          	timeLaserCloudFullRes = fullPointsBuf.front()->header.stamp.toSec();
+          	laserCloudFullRes->clear();
+          	pcl::fromROSMsg(*fullPointsBuf.front(), *laserCloudFullRes);
+          	fullPointsBuf.pop();
+          	mtx_lidar.unlock();
+          
+          if (frameCount % skipFrameNum == 0)
+            {
+			 std::cout<< "pub lidar: " << frameCount << endl;
+                frameCount = 0;
+			 sensor_msgs::PointCloud2 laserCloudFullRes3;
+                pcl::toROSMsg(*laserCloudFullRes, laserCloudFullRes3);
+                laserCloudFullRes3.header.stamp = ros::Time().fromSec(timeLaserCloudFullRes);
+                laserCloudFullRes3.header.frame_id = "/velodyne";
+                pubLaserCloudFullRes.publish(laserCloudFullRes3);
+                
+		  }
+           frameCount++;
+		 printf("process measurement time lidar: %f\n", t_process.toc());
+          }
+          //std::cout << "sync_diff"  << laserCloudFullRes->header.stamp.toSec() - estimator->latest_time  << std::endl;
+		std::chrono::milliseconds dura(2);
+          std::this_thread::sleep_for(dura);
+    }
+}
+
+//receive all point cloud
+void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudFullRes2)
+{
+    mtx_lidar.lock();
+    fullPointsBuf.push(laserCloudFullRes2);
+    mtx_lidar.unlock();
+}
+
 int main(int argc, char **argv)
 {
     ros::init(argc, argv, "vins_estimator");
@@ -418,12 +469,16 @@ int main(int argc, char **argv)
 
     ros::Subscriber sub_imu = n.subscribe(IMU_TOPIC, 2000, imu_callback, ros::TransportHints().tcpNoDelay());
     ros::Subscriber sub_lidar = n.subscribe(POINT_CLOUD_TOPIC, 5,    lidar_callback);
+    ros::Subscriber subLaserCloudFullRes = n.subscribe<sensor_msgs::PointCloud2>("/velodyne_cloud_2", 100, laserCloudFullResHandler);
     ros::Subscriber sub_feature = n.subscribe("/feature_tracker/feature", 2000, feature_callback);
     ros::Subscriber sub_img0 = n.subscribe(IMAGE0_TOPIC, 100, img0_callback);
     ros::Subscriber sub_img1 = n.subscribe(IMAGE1_TOPIC, 100, img1_callback);
     pub_pcl = n.advertise<sensor_msgs::PointCloud2> ("debug_cloud", 1);
+    pubLaserCloudFullRes = n.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_3", 100);
 
-    std::thread sync_thread{sync_process};
+    std::thread sync_thread{sync_process}; // sync_process() runs in a seperate thread 
+    std::thread sync_thread2{sync_process_lidar}; // sync_process_lidar() runs in a seperate thread 
+    
     ros::spin();
 
     return 0;

@@ -30,16 +30,20 @@ outfileGt("resultsGt.txt", std::ios_base::trunc),
 outfileVINS("VINS_bell412_dataset1.txt", std::ios_base::trunc),
 outfileGPS("PPK_bell412_dataset1.txt", std::ios_base::trunc),
 outfileFusion("Fusion_bell412_dataset1.txt", std::ios_base::trunc)
+//timeLaserCloudFullResLast(0.0),
+//timeLaserCloudFullRes(0.0),
+//laserCloudFullRes2(new pcl::PointCloud<PointType>())
 {
     initGPS = false;
     newGPS = false;
+    newCloudFullRes = false;
     WGPS_T_WVIO = Eigen::Matrix4d::Identity();
     WGPS_T_WVIO_viz = Eigen::Matrix4d::Identity();
     update_count =0;
     GTframeCount = 0;
     threadOpt = std::thread(&GlobalOptimization::optimize, this);
-    
-}
+    last_update_time =0.0;
+} 
 
 GlobalOptimization::~GlobalOptimization()
 {
@@ -57,6 +61,20 @@ void GlobalOptimization::GPS2XYZ(double latitude, double longitude, double altit
     //printf("la: %f lo: %f al: %f\n", latitude, longitude, altitude);
     //printf("gps x: %f y: %f z: %f\n", xyz[0], xyz[1], xyz[2]);
 }
+
+// NEW: cloud handling
+/*void GlobalOptimization::inputCloudFullRes(double t,pcl::PointCloud<PointType>::Ptr& laserCloudFullResIn){
+      timeLaserCloudFullRes=t;
+      //laserCloudFullRes->clear();
+      //*laserCloudFullRes = *laserCloudFullResIn;
+      //pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
+      *laserCloudFullRes2 = *laserCloudFullResIn;
+      //laserCloudFullRes->clear();
+	 //pcl::fromROSMsg(*laserCloudFullResIn, *laserCloudFullRes);
+      if (timeLaserCloudFullRes > timeLaserCloudFullResLast){
+	 	newCloudFullRes = true;
+	 }
+}*/
 
 void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quaterniond OdomQ)
 {
@@ -442,6 +460,14 @@ void GlobalOptimization::optimize()
             updateGlobalPath();
           
 		  //printf("global time %f \n", globalOptimizationTime.toc());
+
+		  if(newCloudFullRes){
+			  // use the vio pose to convert the cloud to the global frame and update the pcl cloud	
+                 // set a public pointer of the point cloud 
+                 // use that ot publish the map 
+
+		  }
+
             mPoseMap.unlock();
         }
         std::chrono::milliseconds dura(2000);
@@ -468,7 +494,9 @@ void GlobalOptimization::updateGlobalPath()
         pose_stamped.pose.orientation.y = iter->second[5];
         pose_stamped.pose.orientation.z = iter->second[6];
         global_path.poses.push_back(pose_stamped);
+        last_update_time = pose_stamped.header.stamp.toSec();
     }
+    
  
     gps_path.poses.clear();
     map<double, vector<double>>::iterator iter3;

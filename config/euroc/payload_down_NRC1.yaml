@@ -14,7 +14,8 @@ image_width: 1440
 image_height: 1080
 
 #Lidar info   
-use_lidar: 0
+use_lidar: 0   # adds depth enhance VO
+use_loam: 1    # performs a loam thread
 point_cloud_topic: "/velodyne_points" #/scan default
 use_dense_cloud: 1  # if 0 uses the current scan only for depth enhancement
 lidar_skip: 3
@@ -32,6 +33,25 @@ body_T_cam0: !!opencv-matrix
            -0.99982944, -0.0103882,  -0.01527021, 0.00394073,
            -0.01526652,  -0.00043481, 0.99988337, -0.00039529,
            0, 0, 0, 1]
+
+#Tmatrix from lidar frame to camera frame, cam^T_lidar
+cam0_T_lidar: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [0.1201, 0.9927, -0.0042, -0.27939175, 
+          -0.0165,  0.0062,  0.9998, 0.00394073, 
+           0.9926, -0.1200,  0.0171, -0.00039529,
+                0,       0,       0,      1 ]
+
+
+# lidar to camera extrinsic adjustment -  this is the fine tuning for the Lidar expose using dynamic reconfigure to adjust
+lidar_to_cam_tx: 0
+lidar_to_cam_ty: 0
+lidar_to_cam_tz: 0
+lidar_to_cam_rx: 0
+lidar_to_cam_ry: 0
+lidar_to_cam_rz: 3.11   #+ve yaw  # fixing the lidar error
 
 
 #Multiple thread support

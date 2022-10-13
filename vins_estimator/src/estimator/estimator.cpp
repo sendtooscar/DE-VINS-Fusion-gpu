@@ -56,7 +56,7 @@ void Estimator::inputImage(double t, const cv::Mat &_img,  pcl::PointCloud<Point
     map<int, vector<pair<int, Eigen::Matrix<double, 8, 1>>>> featureFrame; // this is the feature frame with depth
 
 	
-   // sensor_msgs::ChannelFloat32 depth_of_points = depthRegister->get_depth(img_msg->header.stamp, show_img, depth_cloud_temp, trackerData[0].m_camera, feature_points->points);
+   //sensor_msgs::ChannelFloat32 depth_of_points = depthRegister->get_depth(img_msg->header.stamp, show_img, depth_cloud_temp, trackerData[0].m_camera, feature_points->points);
     
 
 }

@@ -7,6 +7,7 @@ set(CMAKE_CXX_FLAGS "-std=c++11")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 
 find_package(catkin REQUIRED COMPONENTS
+    rospy
     roscpp
     std_msgs
     geometry_msgs
@@ -65,6 +66,9 @@ target_link_libraries(vins_lib ${OpenCV_LIBS} ${catkin_LIBRARIES}  ${CERES_LIBRA
 
 add_executable(vins_node src/rosNodeTest.cpp)
 target_link_libraries(vins_node vins_lib) 
+
+add_executable(vscanRegistration src/scanRegistration.cpp)
+target_link_libraries(vscanRegistration ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
 #add_executable(kitti_odom_test src/KITTIOdomTest.cpp)
 #target_link_libraries(kitti_odom_test vins_lib) 

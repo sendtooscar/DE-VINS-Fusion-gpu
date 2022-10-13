@@ -23,6 +23,16 @@
 #include "LocalCartesian.hpp"
 #include "tic_toc.h"
 #include <fstream>
+#include <sensor_msgs/PointCloud2.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/kdtree/kdtree_flann.h>
+
+//#include "lidarFactor.hpp"
+#include "common.h"
+
 
 using namespace std;
 
@@ -39,10 +49,15 @@ public:
         void GPS2XYZ(double latitude, double longitude, double altitude, double* xyz);
      void inputRot(double t, double q_w, double q_x, double q_y, double q_z, double rotAccuracy);
      void inputMag(double t, double mag_x, double mag_y, double mag_z, double magAccuracy);
+     //void inputCloudFullRes(double t,pcl::PointCloud<PointType>::Ptr& laserCloudFullRes);
 	nav_msgs::Path global_path;
      nav_msgs::Path gps_path; 
      nav_msgs::Path ppk_path;
      nav_msgs::Path frl_path;
+     //pcl::PointCloud<PointType>::Ptr laserCloudFullRes2;
+     //double timeLaserCloudFullResLast; //used to check if theres any new cloud to process
+	double last_update_time;
+     std::mutex mPoseMap;
 	//double last_GPS=0; //rav
 
 private:
@@ -62,8 +77,9 @@ private:
 	bool newGPS;
      bool newRot;
      bool newMag;
+     bool newCloudFullRes;
+	
 	GeographicLib::LocalCartesian geoConverter;
-	std::mutex mPoseMap;
 	Eigen::Matrix4d WGPS_T_WVIO;
         Eigen::Matrix4d WGPS_T_WVIO_viz;
         int update_count;
