@@ -60,6 +60,8 @@ const double scanPeriod = 0.1;
 const int systemDelay = 0; 
 int systemInitCount = 0;
 bool systemInited = false;
+bool remove_negx_points = true;
+bool overide_intensity = true;
 int N_SCANS = 0;
 float cloudCurvature[400000];
 int cloudSortInd[400000];
@@ -96,7 +98,7 @@ void removeClosedPointCloud(const pcl::PointCloud<PointT> &cloud_in,
     {
         if (cloud_in.points[i].x * cloud_in.points[i].x + cloud_in.points[i].y * cloud_in.points[i].y + cloud_in.points[i].z * cloud_in.points[i].z < thres * thres)
             continue;
-        if (cloud_in.points[i].x > 0.0)
+        if (cloud_in.points[i].x > 0.0 && remove_negx_points)
 		  continue;
         cloud_out.points[j] = cloud_in.points[i];
         j++;
@@ -113,6 +115,9 @@ void removeClosedPointCloud(const pcl::PointCloud<PointT> &cloud_in,
 
 void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 {
+
+
+    //std::cout << "cloud size " << laserCloudMsg->height << laserCloudMsg->width << std::endl;
     if (!systemInited)
     { 
         systemInitCount++;
@@ -236,13 +241,14 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         }
 
         float relTime = (ori - startOri) / (endOri - startOri);
-        // O - point.intensity = scanID + scanPeriod * relTime;
-        point.intensity = laserCloudIn.points[i].intensity; //intensity
+        point.intensity = scanID + scanPeriod * relTime;
+        if(overide_intensity)
+ 	   	point.intensity = laserCloudIn.points[i].intensity; //intensity
         laserCloudScans[scanID].push_back(point); 
     }
     
     cloudSize = count;
-    ////printf("points size %d \n", cloudSize);
+    //printf("points size %d \n", cloudSize);
 
     pcl::PointCloud<PointType>::Ptr laserCloud(new pcl::PointCloud<PointType>());
     for (int i = 0; i < N_SCANS; i++)
@@ -252,7 +258,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         scanEndInd[i] = laserCloud->size() - 6;
     }
 
-    ////printf("prepare time %f \n", t_prepare.toc());
+    //printf("prepare time %f \n", t_prepare.toc());
 
     for (int i = 5; i < cloudSize - 5; i++)
     { 
@@ -403,13 +409,13 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         pcl::VoxelGrid<PointType> downSizeFilter;
         downSizeFilter.setInputCloud(surfPointsLessFlatScan);
         //downSizeFilter.setLeafSize(0.2, 0.2, 0.2); 
-	   downSizeFilter.setLeafSize(0.1, 0.1, 0.1); //rav
+	   downSizeFilter.setLeafSize(0.2, 0.2, 0.2); //rav
         downSizeFilter.filter(surfPointsLessFlatScanDS);
 
         surfPointsLessFlat += surfPointsLessFlatScanDS;
     }
     ////printf("sort q time %f \n", t_q_sort);
-    ////printf("seperate points time %f \n", t_pts.toc());
+    //printf("seperate points time %f \n", t_pts.toc());
 
 
     sensor_msgs::PointCloud2 laserCloudOutMsg;
@@ -421,25 +427,25 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
     sensor_msgs::PointCloud2 cornerPointsSharpMsg;
     pcl::toROSMsg(cornerPointsSharp, cornerPointsSharpMsg);
     cornerPointsSharpMsg.header.stamp = laserCloudMsg->header.stamp;
-    cornerPointsSharpMsg.header.frame_id = "/odom";
+    cornerPointsSharpMsg.header.frame_id = "/velodyne";
     pubCornerPointsSharp.publish(cornerPointsSharpMsg);
 
     sensor_msgs::PointCloud2 cornerPointsLessSharpMsg;
     pcl::toROSMsg(cornerPointsLessSharp, cornerPointsLessSharpMsg);
     cornerPointsLessSharpMsg.header.stamp = laserCloudMsg->header.stamp;
-    cornerPointsLessSharpMsg.header.frame_id = "/odom";
+    cornerPointsLessSharpMsg.header.frame_id = "/velodyne";
     pubCornerPointsLessSharp.publish(cornerPointsLessSharpMsg);
 
     sensor_msgs::PointCloud2 surfPointsFlat2;
     pcl::toROSMsg(surfPointsFlat, surfPointsFlat2);
     surfPointsFlat2.header.stamp = laserCloudMsg->header.stamp;
-    surfPointsFlat2.header.frame_id = "/odom";
+    surfPointsFlat2.header.frame_id = "/velodyne";
     pubSurfPointsFlat.publish(surfPointsFlat2);
 
     sensor_msgs::PointCloud2 surfPointsLessFlat2;
     pcl::toROSMsg(surfPointsLessFlat, surfPointsLessFlat2);
     surfPointsLessFlat2.header.stamp = laserCloudMsg->header.stamp;
-    surfPointsLessFlat2.header.frame_id = "/odom";
+    surfPointsLessFlat2.header.frame_id = "/velodyne";
     pubSurfPointsLessFlat.publish(surfPointsLessFlat2);
 
     // pub each scan 

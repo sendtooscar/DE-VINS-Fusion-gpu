@@ -50,6 +50,32 @@ struct TError
 
 };
 
+
+struct XYError
+{
+	XYError(double t_x, double t_y, double t_z, double var)
+				  :t_x(t_x), t_y(t_y), t_z(t_z), var(var){}
+
+	template <typename T>
+	bool operator()(const T* tj, T* residuals) const
+	{
+		residuals[0] = (tj[0] - T(t_x)) / T(var);
+		residuals[1] = (tj[1] - T(t_y)) / T(var);
+
+		return true;
+	}
+
+	static ceres::CostFunction* Create(const double t_x, const double t_y, const double t_z, const double var) 
+	{
+	  return (new ceres::AutoDiffCostFunction<
+	          XYError, 2, 3>(
+	          	new XYError(t_x, t_y, t_z, var)));
+	}
+
+	double t_x, t_y, t_z, var;
+
+};
+
 struct RError
 {
 	RError(double q_w, double q_x, double q_y, double q_z, double var)

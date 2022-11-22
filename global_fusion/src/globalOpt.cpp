@@ -36,6 +36,7 @@ outfileFusion("Fusion_bell412_dataset1.txt", std::ios_base::trunc)
 {
     initGPS = false;
     newGPS = false;
+    newGPSPR = false;
     newCloudFullRes = false;
     WGPS_T_WVIO = Eigen::Matrix4d::Identity();
     WGPS_T_WVIO_viz = Eigen::Matrix4d::Identity();
@@ -201,7 +202,15 @@ void GlobalOptimization::inputGPS(double t, double latitude, double longitude, d
 	GPSPositionMap[t] = tmp;
      newGPS = true;
 
+}
 
+void GlobalOptimization::inputGPSPR(double t, double latitude, double longitude, double altitude, double posAccuracy)
+{    
+     double xyz[3];
+	GPS2XYZ(latitude, longitude, altitude, xyz);
+	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
+	GPSPRPositionMap[t] = tmp;
+     newGPSPR = true;
 
 }
 
@@ -300,7 +309,7 @@ void GlobalOptimization::optimize()
             }
             
           
-            map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS, iterRot, iterMag;
+            map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS, iterGPSPR, iterRot, iterMag;
             int i = 0;
             for (iterVIO = localPoseMap.begin(); iterVIO != localPoseMap.end(); iterVIO++, i++)
             {
@@ -342,6 +351,18 @@ void GlobalOptimization::optimize()
                     problem.AddResidualBlock(gps_function, loss_function, t_array[i]);
 
                 }}//newGPS
+
+
+                if(newGPSPR){
+                iterGPSPR = GPSPRPositionMap.find(t);
+                if (iterGPSPR != GPSPRPositionMap.end())
+                {
+                    ceres::CostFunction* gps_pr_function = XYError::Create(iterGPSPR->second[0], iterGPSPR->second[1], 
+                                                                       iterGPSPR->second[2], iterGPSPR->second[3]);
+                    //printf("inverse weight %f \n", iterGPS->second[3]);
+                    problem.AddResidualBlock(gps_pr_function, loss_function, t_array[i]);
+
+                }}//newGPSPR
 
 
                 // O- Rot factor (FULL AHRS INPUT) --k

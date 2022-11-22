@@ -82,7 +82,7 @@ void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
         listener.waitForTransform("world", "body_fast", laser_msg->header.stamp, ros::Duration(0.1));
         listener.lookupTransform("world", "body_fast", ros::Time(0), transform);
         //listener.lookupTransform("world", "body_fast", laser_msg->header.stamp, transform);
-        std::cout << "sync_diff"  << laser_msg->header.stamp - transform.stamp_ << std::endl; //k low sync errors
+        //std::cout << "sync_diff"  << laser_msg->header.stamp - transform.stamp_ << std::endl; //k low sync errors
     } 
     catch (tf::TransformException ex){
         /*std::cout << std::endl;
@@ -130,7 +130,7 @@ void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
     // 4. offset T_lidar -> T_camera 
     pcl::PointCloud<PointType>::Ptr laser_cloud_offset(new pcl::PointCloud<PointType>());
     Eigen::Affine3f transOffset = pcl::getTransformation(L_C_tx, L_C_ty, L_C_tz, L_C_rx, L_C_ry, L_C_rz); // this is only fine tuning adjustment 
-    cout << transOffset.matrix() <<endl;
+    //cout << transOffset.matrix() <<endl;
     pcl::transformPointCloud(*laser_cloud_in, *laser_cloud_offset, transOffset);
     *laser_cloud_in = *laser_cloud_offset;
 
@@ -194,7 +194,7 @@ void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
 
     // 9. downsample global cloud
     pcl::PointCloud<PointType>::Ptr depthCloudDS(new pcl::PointCloud<PointType>());
-    downSizeFilter.setLeafSize(0.2, 0.2, 0.2);
+    downSizeFilter.setLeafSize(0.4, 0.4, 0.4);
     downSizeFilter.setInputCloud(depthCloud);
     downSizeFilter.filter(*depthCloudDS);
     *depthCloud = *depthCloudDS;
@@ -400,7 +400,7 @@ void sync_process_lidar(){
 		
 		if (!fullPointsBuf.empty()){
           TicToc t_process;
-                mtx_lidar.lock();
+               mtx_lidar.lock();
           	timeLaserCloudFullRes = fullPointsBuf.front()->header.stamp.toSec();
           	laserCloudFullRes->clear();
           	pcl::fromROSMsg(*fullPointsBuf.front(), *laserCloudFullRes);
@@ -421,7 +421,8 @@ void sync_process_lidar(){
            frameCount++;
 		 printf("process measurement time lidar: %f\n", t_process.toc());
           }
-          //std::cout << "sync_diff"  << laserCloudFullRes->header.stamp.toSec() - estimator->latest_time  << std::endl;
+         // std::cout << "sync_diff"  << timeLaserCloudFullRes - estimator->latest_time  << "---------------------------"<<std::endl;
+          // match to the closest node in the graph within scan
 		std::chrono::milliseconds dura(2);
           std::this_thread::sleep_for(dura);
     }

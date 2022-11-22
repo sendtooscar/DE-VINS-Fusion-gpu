@@ -52,14 +52,28 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl_conversions/pcl_conversions.h>
 
+#include <pcl/search/impl/search.hpp>
+#include <pcl/common/copy_point.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/ModelCoefficients.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/octree/octree_pointcloud_pointvector.h>
+#include <pcl/octree/octree_search.h>
+
+
 #include "lidarFactor.hpp"
 //#include "common.h"
 #include "tic_toc.h"
 #include "parameters.h"
 
+typedef vector< tuple<size_t, size_t> > TupleList;
+
 GlobalOptimization globalEstimator;
 ros::Publisher pub_global_odometry, pub_global_path, pub_gps_path, pub_ppk_path, pub_frl_path, pub_car;
-ros::Publisher pubLaserCloudSurround, pubLaserCloudMap, pubLaserCloudFullRes, pubOdomAftMapped, pubOdomAftMappedHighFrec, pubLaserAfterMappedPath;
+ros::Publisher pubLaserCloudSurround, pubLaserCloudMap, pubLaserCloudFullRes, pubOdomAftMapped, pubOdomAftMappedHighFrec, pubLaserAfterMappedPath, pubLaserCloudMapSurround;
 nav_msgs::Path *global_path;
 nav_msgs::Path *gps_path; // this is used to plot the gps_message path
 nav_msgs::Path *ppk_path; // this is used to plot the gps_message path
@@ -69,6 +83,7 @@ map<double, vector<double>> GPSPositionMap;
 double last_vio_t = -1;
 std::queue<nav_msgs::OdometryConstPtr> vioQueue;
 std::queue<sensor_msgs::NavSatFixConstPtr> gpsQueue;
+std::queue<sensor_msgs::NavSatFixConstPtr> prgpsQueue;
 std::queue<geometry_msgs::QuaternionStampedConstPtr> rotQueue;
 std::queue<geometry_msgs::Vector3StampedConstPtr> magQueue;
 std::mutex m_buf;
@@ -82,8 +97,12 @@ bool use_vio_atti = false;// this one performs a ref vector update (good for rol
 bool viz_ppk = false;  //TODO  : send to config file
 bool viz_frl = true;  //TODO  : send to config file
 bool use_lidar = true; // performs lidar mapping
+bool use_pr_gps = false; // loop closure updates
+bool use_lz_seg =true;
 std::string ppk_pos_file = "/storage_ssd/bell412Dataset1/bell412_dataset1_ppk.pos"; //TODO  : send to config file
-std::string frl_pos_file = "/storage_ssd/bell412Dataset1/bell412_dataset1_frl.pos"; //TODO  : send to config file
+std::string frl_pos_file = "/storage_ssd/bell412_dataset1/bell412_dataset1_frl.pos"; //TODO  : send to config file
+//std::string frl_pos_file = "/storage_ssd/bell412_dataset6/bell412_dataset6_frl.pos";
+//std::string frl_pos_file = "/storage_ssd/bell412_dataset1/bell412_dataset1_frl.pos";
 //std::string frl_pos_file = "/media/EC3C-97F9/bell412_data_capture_NRC/bell412_dataset5_frl.pos"; //TODO  : send to config file
 std::string nmeaSentence = {};
 std::string nmea_time;
@@ -94,8 +113,10 @@ boost::gregorian::date my_posix_date;
 boost::posix_time::time_duration my_time_of_day;
 bool cloud_init= false;
 
+
 std::ifstream myfile1 (ppk_pos_file);
 std::ifstream myfile2 (frl_pos_file);
+
 std::string line;
 bool skip_read = false;
 sensor_msgs::NavSatFix fix_ppk_msg;
@@ -111,6 +132,208 @@ int path_start_index = 0;
 int frameCount = 0;
 bool map_init = false;
 pcl::VoxelGrid<PointType> downSizeFilterFull;
+
+
+//Octree
+std::deque<pcl::PointCloud<PointType>> cloudBuf;
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloudRGB;
+float resolution_octree = 8.0f;
+float slope_thresh = 0.5;
+float z_th = 1.5;
+//color values -> original
+uint8_t r = 255;
+uint8_t g = 0;
+uint8_t b = 0;
+int32_t rgb_or = (r << 16) | (g << 8) | b;
+
+uint8_t r2 = 0;
+uint8_t g2 = 255;
+int32_t rgb_nw = (r2 << 16) | (g2 << 8) | b;
+
+
+/// LZ segmentation
+bool classicalSegmentFunction(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloudIn){
+
+            if(cloudIn->size() < 30){
+                //PCL_ERROR("Could not estimate a planar model for the given data\n");
+                //ROS_INFO("Less points");
+                return false;
+           }
+             
+ 
+            // SACSegmentation
+            pcl::ModelCoefficients::Ptr coefficents(new pcl::ModelCoefficients);
+            pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+
+            //create segmentation object
+            pcl::SACSegmentation<pcl::PointXYZRGB> seg;
+
+            // set the parameters
+            seg.setOptimizeCoefficients(true);
+            seg.setModelType(pcl::SACMODEL_PLANE);
+            seg.setMethodType(pcl::SAC_RANSAC);
+            seg.setDistanceThreshold(0.5);
+
+            // input cloud and segment
+
+            seg.setInputCloud(cloudIn);
+            seg.segment(*inliers, *coefficents);
+
+            //min max
+            float zmin = 10000, zmax=-10000;
+            float x_mean=0.0, y_mean=0.0, z_mean=0.0; 
+            float xcrr, ycrr, zcrr, count=0.0;
+		  for(unsigned int i = 0; i < cloudIn->size(); i++)
+			{
+				xcrr = cloudIn->at(i)._PointXYZRGB::x;
+				ycrr = cloudIn->at(i)._PointXYZRGB::y;
+    				zcrr = cloudIn->at(i)._PointXYZRGB::z;
+
+				if(!isnan(x_mean) &&  !isnan(x_mean) && !isnan(x_mean) )
+				{
+					if(zcrr > zmax)
+	        				zmax = zcrr;
+	    				if(zcrr < zmin)
+	        				zmin = zcrr;
+				
+					x_mean = x_mean + xcrr;
+					y_mean = y_mean + ycrr;
+					z_mean = z_mean + zcrr;
+					count++;
+				}	
+			}
+			if(count >0){
+				x_mean = x_mean/count;
+				y_mean = y_mean/count;
+				z_mean = z_mean/count;}
+			else {return false;}
+
+            // TRANSFORM TO CENTER
+            Eigen::Matrix4f tf_adj;
+		  tf_adj << 1, 0, 0, -x_mean,
+     		  	  0, 1, 0, -y_mean,
+     	            0, 0, 1, -z_mean,
+                 	  0, 0, 0, 1;
+     	 // pcl::transformPointCloud(*cloudIn, *cloudIn, tf_adj);	
+  		  //pcl::getMinMax3D (cloudIn, minPt, maxPt);
+
+            float inlierSize = float(inliers->indices.size());
+            float cloudSize = float(cloudIn->size());
+
+            //ROS_INFO("test function %ld", inliers->indices.size());
+            if(inliers->indices.size() == 0){
+                //PCL_ERROR("Could not estimate a planar model for the given data\n");
+                //ROS_INFO("Error");
+                return false;
+            }else{
+
+                float inlier_percentage = ((inlierSize/cloudSize) * 100);
+                //ROS_INFO("inlier per %f, %f,  %f", inlierSize, cloudSize, inlier_percentage);
+                
+                float coeffA = coefficents->values[0];
+                float coeffB = coefficents->values[1];
+                float coeffC = coefficents->values[2];
+                float coeffD = coefficents->values[3];
+                coeffA = coeffA/coeffC;
+                coeffB = coeffB/coeffC;
+                coeffD = coeffD/coeffC;
+
+                //ROS_INFO("inlier per %f, %f, %f,  %f", coeffA, coeffB, coeffD, inlier_percentage);
+
+                //posesFile << inlier_percentage <<" A: " << coeffA << " , B: " << coeffB <<  " , C: " << coeffC << "\n";
+
+                if(inlier_percentage > 90.0){
+
+
+                    if((! isnan(coeffA)) && (! isnan(coeffB)) && (coeffA > -slope_thresh) && (coeffA < slope_thresh) && (coeffB > -slope_thresh) && (coeffB < slope_thresh)  && ((zmax-zmin) < z_th)){
+                        ROS_INFO("inlier per %f, %f, %f, %f, %f. %f, %f", coeffA, coeffB, coeffD, zmax, zmin, cloudSize,inlier_percentage);
+                        return true;
+                    }else{
+                        return false;
+                    }
+                }else{
+                    return false;
+                }              
+            }
+        }
+
+
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr classicalSegmentCloud(pcl::PointCloud<PointType>::Ptr cloudIn){
+
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloudInterim(new pcl::PointCloud<pcl::PointXYZRGB>());
+
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloudOut(new pcl::PointCloud<pcl::PointXYZRGB>());
+
+	cloudRGB->points.resize(cloudIn->size());
+
+            //ROS_INFO("cloudIn size %ld", cloudIn->size());
+
+     for (size_t i=0; i<cloudIn->points.size(); i++){
+                cloudRGB->points[i].x = cloudIn->points[i].x;
+                cloudRGB->points[i].y = cloudIn->points[i].y;
+                cloudRGB->points[i].z = cloudIn->points[i].z;
+
+                cloudRGB->points[i].rgb = rgb_or;
+     }
+
+            pcl::octree::OctreePointCloudSearch<PointType> octreeT (resolution_octree);
+            
+            octreeT.setInputCloud(cloudIn);
+            octreeT.addPointsFromInputCloud();
+
+            
+            pcl::PointCloud<PointType>::VectorType voxelCenters;
+            octreeT.getOccupiedVoxelCenters(voxelCenters);
+
+            for (size_t r=0; r<voxelCenters.size(); ++r){
+                Eigen::Vector3f centerVal= voxelCenters[r].getVector3fMap();
+                
+                std::vector<int> pointIdxVec;
+
+                if(octreeT.voxelSearch(voxelCenters[r],pointIdxVec)){
+                    //ROS_INFO("pointIdVec size %ld", pointIdxVec.size());
+
+                    if(pointIdxVec.size()>15){
+
+                        cloudInterim->resize(pointIdxVec.size());
+
+                        TupleList tl;
+
+                        for(size_t i=0;i<pointIdxVec.size(); ++i){
+
+
+                            cloudInterim->points[i].x = cloudRGB->points[pointIdxVec[i]].x;
+                            cloudInterim->points[i].y = cloudRGB->points[pointIdxVec[i]].y;
+                            cloudInterim->points[i].z = cloudRGB->points[pointIdxVec[i]].z;
+                            cloudInterim->points[i].rgb = rgb_or;
+
+                            tl.push_back(tuple<size_t,size_t>(i,pointIdxVec[i]));
+
+                        }
+
+                        bool isFlat = classicalSegmentFunction(cloudInterim);
+
+                        if(isFlat){
+                            for (size_t j=0;j<pointIdxVec.size(); ++j){
+                                //ROS_INFO("idx %d", idx);
+                                cloudRGB->points[pointIdxVec[j]].r = 0;
+                                cloudRGB->points[pointIdxVec[j]].g = 255;
+                                cloudRGB->points[pointIdxVec[j]].b = 121;
+                            }
+                        }else{
+                           // ROS_INFO("Could not estimate a planar model for the given data\n");                            
+                        }
+                        
+                    }
+                                       
+                }
+            }
+
+            return cloudRGB;
+        }
+
+
+// LZ segmentation
 
 void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w_car)
 {
@@ -152,6 +375,15 @@ void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w
     markerArray_msg.markers.push_back(car_mesh);
     pub_car.publish(markerArray_msg);
 }	
+
+void PR_GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
+{
+    if(!use_pr_gps) return;
+    m_buf.lock();
+    prgpsQueue.push(GPS_msg);
+    m_buf.unlock();
+
+}
 
 void GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
 {
@@ -289,6 +521,42 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
         else if(gps_t > t + 0.1)
             break;
     }
+
+
+    // add Place recognition factors to the graph
+    while(!prgpsQueue.empty())
+    {
+        sensor_msgs::NavSatFixConstPtr GPS_msg = prgpsQueue.front();
+        double gps_t = GPS_msg->header.stamp.toSec();
+        printf("vio t: %f, prgps t: %f \n", t, gps_t);
+        // 10ms sync tolerance
+        //if(gps_t >= t - 0.01 && gps_t <= t + 0.01)
+        if(gps_t >= t - 0.1 && gps_t <= t + 0.1) //TODO: get from config ( this can be larger for unsynced data)  
+        {
+            //printf("receive GPS with timestamp %f\n", GPS_msg->header.stamp.toSec());
+            double latitude = GPS_msg->latitude;
+            double longitude = GPS_msg->longitude;
+            double altitude = GPS_msg->altitude;
+            int fixstatus = GPS_msg->status.status;  //this is 2 for rtk and 
+            double pos_accuracy = GPS_msg->position_covariance[0];
+ 		  if(fixstatus == 2 ){
+                	//printf("synced| receive covariance %lf | fix status(2:RTK) %i \n", pos_accuracy, fixstatus); // use this to check gps sync errors
+                	globalEstimator.inputGPSPR(t, latitude, longitude, altitude, pos_accuracy); }
+		  //if(fixstatus == 1 ){
+                	//printf("synced| receive covariance %lf | fix status(2:RTK) %i \n", pos_accuracy, fixstatus); // use this to check gps sync errors
+                	//globalEstimator.inputGPSLC(t, latitude, longitude, altitude, pos_accuracy); }
+            prgpsQueue.pop();
+            break;
+        }
+        //else if(gps_t < t - 0.01)
+        else if(gps_t < t - 0.1)
+            gpsQueue.pop();
+        //else if(gps_t > t + 0.01)
+        else if(gps_t > t + 0.1)
+            break;
+    }
+
+
 
     // process the rot buffer
     while(!rotQueue.empty())
@@ -834,12 +1102,19 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
 
      if (!map_init){	
           laserCloudFullMap = *laserCloudFullDS;
+          cloudBuf.push_back(*laserCloudFullDS);
           map_init =true;
      }
 	else{
 		laserCloudFullMap += *laserCloudFullDS;
+          cloudBuf.push_back(*laserCloudFullDS);
+          if (cloudBuf.size()>20){
+            cloudBuf.pop_front(); //catch up
+		}
 	}
-
+     // keep a buffer of the map  - can be optimized
+     // pop the bufffer it exceeds length  
+     
     
 	//7.publish
      sensor_msgs::PointCloud2 laserCloudFullRes3;
@@ -847,11 +1122,33 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
 	laserCloudFullRes3.header.stamp = ros::Time().fromSec(synced_time);
 	laserCloudFullRes3.header.frame_id = "/worldGPS";
      pubLaserCloudFullRes.publish(laserCloudFullRes3);
+     
+      if(use_lz_seg && frameCount % 3 == 0){
+          //combine the scans in buffer
+          pcl::PointCloud<pcl::PointXYZI>::Ptr cloudPTR(new pcl::PointCloud<pcl::PointXYZI>);
+          for (int i=0; i < cloudBuf.size(); i++) {
+    			*cloudPTR += cloudBuf[i];
+		}
+	     
+   
+          // segmentation of current scan
+          cloudRGB =  classicalSegmentCloud(cloudPTR);
+          cout << "Segmented map size : " << cloudRGB->points.size() << "| Frame: " << frameCount << endl ; 
 
+
+		//append the map - TODO: for efficiency use a channel of the same published map
+          
+          sensor_msgs::PointCloud2 surrooundCloudMsg;
+		pcl::toROSMsg(*cloudRGB, surrooundCloudMsg);
+		surrooundCloudMsg.header.stamp = ros::Time().fromSec(synced_time);
+		surrooundCloudMsg.header.frame_id = "/worldGPS";
+     	pubLaserCloudMapSurround.publish(surrooundCloudMsg);}
+          //publish    
+     }
 
 
 	//8. publish map
-     if (frameCount % 20 == 0)
+     if (frameCount % 10 == 0)
 		{		sensor_msgs::PointCloud2 laserCloudMsg;
 				pcl::toROSMsg(laserCloudFullMap, laserCloudMsg);
 				laserCloudMsg.header.stamp = ros::Time().fromSec(synced_time);
@@ -860,8 +1157,8 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
                	cout << "Published map size : " << laserCloudFullMap.points.size() << "| Frame: " << frameCount << endl ;
 				//publish aft mapped path
                     
-
-		}
+                    
+		  
 
 
 	//9. Publish path
@@ -885,6 +1182,9 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
 	laserAfterMappedPath.header.frame_id = "/worldGPS";
 	laserAfterMappedPath.poses.push_back(laserAfterMappedPose);
 	pubLaserAfterMappedPath.publish(laserAfterMappedPath);
+
+            
+        
 
 
 	}
@@ -929,6 +1229,11 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
 
 
 
+
+        
+
+
+
 int main(int argc, char **argv)
 {
     ros::init(argc, argv, "globalEstimator");
@@ -947,7 +1252,7 @@ int main(int argc, char **argv)
     printf("config_file: %s\n", argv[1]);
 
     readParameters(config_file);}
-
+    cloudRGB.reset(new pcl::PointCloud<pcl::PointXYZRGB>());
     
 
     global_path = &globalEstimator.global_path;
@@ -960,6 +1265,7 @@ int main(int argc, char **argv)
    
     ros::Subscriber sub_nmea = n.subscribe("/nmea_sentence", 100, nmeaCallback);
     ros::Subscriber sub_GPS = n.subscribe("/fix", 100, GPS_callback);
+    ros::Subscriber sub_pr_fix = n.subscribe("/pr_fix", 100, PR_GPS_callback);
     ros::Subscriber sub_vio = n.subscribe("/vins_estimator/odometry", 100, vio_callback);
     ros::Subscriber sub_imu = n.subscribe("/imu/mag", 100, mag_callback);
     
@@ -971,6 +1277,7 @@ int main(int argc, char **argv)
     		ros::Subscriber subLaserCloudFullRes = n.subscribe("/velodyne_cloud_3", 100, laserCloudFullResHandler);
     		pubLaserCloudFullRes = n.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_registered", 100);
     		pubLaserCloudMap = n.advertise<sensor_msgs::PointCloud2>("/laser_cloud_map", 100);
+          pubLaserCloudMapSurround = n.advertise<sensor_msgs::PointCloud2>("/laser_cloud_map_surround", 100);
           pubLaserAfterMappedPath = n.advertise<nav_msgs::Path>("/aft_mapped_path", 100);
           pubOdomAftMapped = n.advertise<nav_msgs::Odometry>("/aft_mapped_to_init", 100);
 		downSizeFilterFull.setLeafSize(0.1, 0.1,0.1);

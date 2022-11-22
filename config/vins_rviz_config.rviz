@@ -59,7 +59,7 @@ Visualization Manager:
       Color: 160; 160; 164
       Enabled: true
       Line Style:
-        Line Width: 2.9999999329447746
+        Line Width: 3
         Value: Lines
       Name: Grid
       Normal Cell Count: 0
@@ -200,7 +200,7 @@ Visualization Manager:
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
           Line Style: Lines
-          Line Width: 2.9999999329447746
+          Line Width: 3
           Name: VIOPath
           Offset:
             X: 0
@@ -291,7 +291,7 @@ Visualization Manager:
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
           Line Style: Lines
-          Line Width: 0.29999999329447746
+          Line Width: 0.29999998211860657
           Name: GloablPath
           Offset:
             X: 0
@@ -315,7 +315,7 @@ Visualization Manager:
           Value: true
       Enabled: true
       Name: GlobalGroup
-    - Alpha: 0.5
+    - Alpha: 0.20000000298023224
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
         Max Value: 10
@@ -325,7 +325,7 @@ Visualization Manager:
       Channel Name: intensity
       Class: rviz/PointCloud2
       Color: 255; 255; 255
-      Color Transformer: Intensity
+      Color Transformer: RGB8
       Decay Time: 5
       Enabled: true
       Invert Rainbow: false
@@ -335,10 +335,10 @@ Visualization Manager:
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
-      Size (Pixels): 3
+      Size (Pixels): 2
       Size (m): 0.30000001192092896
-      Style: Flat Squares
-      Topic: /velodyne_cloud_registered
+      Style: Points
+      Topic: /laser_cloud_map_surround
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -352,7 +352,7 @@ Visualization Manager:
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
       Line Style: Lines
-      Line Width: 0.29999999329447746
+      Line Width: 0.29999998211860657
       Name: Path
       Offset:
         X: 0
@@ -375,7 +375,7 @@ Visualization Manager:
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
       Line Style: Lines
-      Line Width: 0.29999999329447746
+      Line Width: 0.29999998211860657
       Name: Path
       Offset:
         X: 1
@@ -407,7 +407,7 @@ Visualization Manager:
         body:
           Value: true
         body_fast:
-          Value: false
+          Value: true
         camera:
           Value: true
         velodyne:
@@ -486,7 +486,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 450.5633239746094
+      Distance: 270.2007141113281
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1

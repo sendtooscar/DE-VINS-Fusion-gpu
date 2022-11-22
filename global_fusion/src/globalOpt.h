@@ -42,6 +42,7 @@ public:
 	GlobalOptimization();
 	~GlobalOptimization();
 	void inputGPS(double t, double latitude, double longitude, double altitude, double posAccuracy);
+     void inputGPSPR(double t, double latitude, double longitude, double altitude, double posAccuracy);
         void inputPPKviz(double t, double latitude, double longitude, double altitude, double posAccuracy);
      void inputFRLviz(double t, double latitude, double longitude, double altitude, double w, double x, double y, double z);
 	void inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quaterniond OdomQ);
@@ -70,11 +71,13 @@ private:
 	map<double, vector<double>> globalPoseMap;
      map<double, vector<double>> globalRotMap;
 	map<double, vector<double>> GPSPositionMap;
+     map<double, vector<double>> GPSPRPositionMap;
      map<double, vector<double>> PPKPositionMap;
      map<double, vector<double>> FRLPoseMap;
      map<double, vector<double>> magMap;
 	bool initGPS;
 	bool newGPS;
+	bool newGPSPR;
      bool newRot;
      bool newMag;
      bool newCloudFullRes;
