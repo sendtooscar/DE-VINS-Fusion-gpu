@@ -29,7 +29,17 @@ outfileOdom("resultsOdom.txt", std::ios_base::trunc),
 outfileGt("resultsGt.txt", std::ios_base::trunc),
 outfileVINS("VINS_bell412_dataset1.txt", std::ios_base::trunc),
 outfileGPS("PPK_bell412_dataset1.txt", std::ios_base::trunc),
-outfileFusion("Fusion_bell412_dataset1.txt", std::ios_base::trunc)
+outfileFusion("Fusion_bell412_dataset1.txt", std::ios_base::trunc),
+laserCloudCornerLast(new pcl::PointCloud<PointType>()),
+laserCloudSurfLast(new pcl::PointCloud<PointType>()),
+laserCloudSurround(new pcl::PointCloud<PointType>()),
+laserCloudCornerFromMap(new pcl::PointCloud<PointType>()),
+laserCloudSurfFromMap(new pcl::PointCloud<PointType>()),
+laserCloudFullRes(new pcl::PointCloud<PointType>()),
+laserCloudCornerStack(new pcl::PointCloud<PointType>()),
+laserCloudSurfStack(new pcl::PointCloud<PointType>()),
+kdtreeCornerFromMap(new pcl::KdTreeFLANN<PointType>()),
+kdtreeSurfFromMap(new pcl::KdTreeFLANN<PointType>())
 //timeLaserCloudFullResLast(0.0),
 //timeLaserCloudFullRes(0.0),
 //laserCloudFullRes2(new pcl::PointCloud<PointType>())
@@ -38,12 +48,29 @@ outfileFusion("Fusion_bell412_dataset1.txt", std::ios_base::trunc)
     newGPS = false;
     newGPSPR = false;
     newCloudFullRes = false;
+    newCloud = false;
     WGPS_T_WVIO = Eigen::Matrix4d::Identity();
     WGPS_T_WVIO_viz = Eigen::Matrix4d::Identity();
     update_count =0;
     GTframeCount = 0;
     threadOpt = std::thread(&GlobalOptimization::optimize, this);
     last_update_time =0.0;
+
+
+    float lineRes = 0.4;
+    float planeRes = 0.8;
+    printf("line resolution %f plane resolution %f \n", lineRes, planeRes);
+    downSizeFilterCorner.setLeafSize(lineRes, lineRes,lineRes);
+    downSizeFilterSurf.setLeafSize(planeRes, planeRes, planeRes);
+
+    for (int i = 0; i < laserCloudNum; i++)
+    {
+		laserCloudCornerArray[i].reset(new pcl::PointCloud<PointType>());
+		laserCloudSurfArray[i].reset(new pcl::PointCloud<PointType>());
+    }
+
+
+    
 } 
 
 GlobalOptimization::~GlobalOptimization()
@@ -61,6 +88,21 @@ void GlobalOptimization::GPS2XYZ(double latitude, double longitude, double altit
     geoConverter.Forward(latitude, longitude, altitude, xyz[0], xyz[1], xyz[2]);
     //printf("la: %f lo: %f al: %f\n", latitude, longitude, altitude);
     //printf("gps x: %f y: %f z: %f\n", xyz[0], xyz[1], xyz[2]);
+}
+
+void GlobalOptimization::pointAssociateToMap(PointType const *const pi, PointType *const po)
+{
+
+     // modified to include the Lidar extrinsics
+	Eigen::Vector3d point_L(pi->x, pi->y, pi->z);
+
+     Eigen::Vector3d point_curr = q_I_L *point_L + t_I_L;
+	Eigen::Vector3d point_w = q_w_curr * point_curr + t_w_curr;
+	po->x = point_w.x();
+	po->y = point_w.y();
+	po->z = point_w.z();
+	po->intensity = pi->intensity;
+	//po->intensity = 1.0;
 }
 
 // NEW: cloud handling
@@ -158,8 +200,8 @@ void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quate
 
     // initialize using compass
     // wait for compass
-    //get ref mag heading
-    //get current mag heading 
+    // get ref mag heading
+    // get current mag heading 
     // set the heading
 
  
@@ -199,9 +241,10 @@ void GlobalOptimization::inputGPS(double t, double latitude, double longitude, d
 	double xyz[3];
 	GPS2XYZ(latitude, longitude, altitude, xyz);
 	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
+     mPoseMap.lock();
 	GPSPositionMap[t] = tmp;
      newGPS = true;
-
+     mPoseMap.unlock();
 }
 
 void GlobalOptimization::inputGPSPR(double t, double latitude, double longitude, double altitude, double posAccuracy)
@@ -209,25 +252,28 @@ void GlobalOptimization::inputGPSPR(double t, double latitude, double longitude,
      double xyz[3];
 	GPS2XYZ(latitude, longitude, altitude, xyz);
 	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
+     mPoseMap.lock();
 	GPSPRPositionMap[t] = tmp;
      newGPSPR = true;
-
+     mPoseMap.unlock();
 }
 
 void GlobalOptimization::inputRot(double t, double q_w, double q_x, double q_y, double q_z, double rotAccuracy)
 {
 	vector<double> tmp{q_w, q_x, q_y, q_z, rotAccuracy};
+     mPoseMap.lock();
 	globalRotMap[t] = tmp;
      newRot = true;
-
+     mPoseMap.unlock();
 }
 
 void GlobalOptimization::inputMag(double t, double mag_x, double mag_y, double mag_z, double magAccuracy)
 {
 	vector<double> tmp{mag_x, mag_y, mag_z, magAccuracy};
+     mPoseMap.lock();
 	magMap[t] = tmp;
      newMag = true;
-
+     mPoseMap.unlock();
 }
 
 void GlobalOptimization::inputPPKviz(double t, double latitude, double longitude, double altitude, double posAccuracy)
@@ -235,7 +281,9 @@ void GlobalOptimization::inputPPKviz(double t, double latitude, double longitude
 	double xyz[3];
 	GPS2XYZ(latitude, longitude, altitude, xyz);
 	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
+     mPoseMap.lock();
 	PPKPositionMap[t] = tmp;
+     mPoseMap.unlock();     
 
 	//R----------------------R//
      last_GPS=0;
@@ -262,18 +310,45 @@ void GlobalOptimization::inputFRLviz(double t, double latitude, double longitude
 	double xyz[3];
 	GPS2XYZ(latitude, longitude, altitude, xyz);
 	vector<double> tmp{xyz[0], xyz[1], xyz[2], w, x, y, z};
+     mPoseMap.lock();
 	FRLPoseMap[t] = tmp;
+	mPoseMap.unlock();
+}
+
+
+
+void GlobalOptimization::inputSurfnCorners(double t, pcl::PointCloud<PointType>::Ptr& laserCloudCornerLastin, pcl::PointCloud<PointType>::Ptr& laserCloudSurfLastin){
+     
+     mPoseMap.lock();
+     // bufffer this to the optimize thread -  the optimize thread will discard as needed to keep things real time
+     if (newCloud ==  false){
+		laserCloudCornerLast = laserCloudCornerLastin;
+          laserCloudSurfLast = laserCloudSurfLastin;
+          timeLaserCloud = t;
+          //cout << "cloud size "<<laserCloudCornerLastin->size() << "|" << laserCloudCornerLast->size() << "|" << timeLaserCloud <<endl;
+          
+          newCloud =  true;
+	}
+	else {
+          printf("-x");
+	}
+     mPoseMap.unlock();
 }
 
 void GlobalOptimization::optimize()
 {
     while(true)
     {
-        if(newGPS || newRot || newMag)
+
+	   flag_lidar_sync = false;
+        laserCloudSurfFromMapNum = 0;
+        laserCloudCornerFromMapNum = 0;
+        
+        if(newGPS || newRot || newMag || newCloud || newGPSPR) //warning these flags are assumed thread safe ( only read here and locked at writing)
         {
-            printf("global optimization %d,%d,%d\n",newGPS,newRot,newMag);
-            
-            
+            printf("\n --------------------------------------- \n");
+            printf("global optimization %d,%d,%d,%d,%d\n",newGPS,newRot,newMag,newCloud,newGPSPR);
+     
             TicToc globalOptimizationTime;
 
             ceres::Problem problem;
@@ -310,8 +385,9 @@ void GlobalOptimization::optimize()
             
           
             map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS, iterGPSPR, iterRot, iterMag;
-            int i = 0;
-            for (iterVIO = localPoseMap.begin(); iterVIO != localPoseMap.end(); iterVIO++, i++)
+            int pose_i = 0;
+            int synced_pose_i =0;
+            for (iterVIO = localPoseMap.begin(); iterVIO != localPoseMap.end(); iterVIO++, pose_i++)
             {
                 //vio factor
                 iterVIONext = iterVIO;
@@ -334,45 +410,60 @@ void GlobalOptimization::optimize()
                     ceres::CostFunction* vio_function = RelativeRTError::Create(iPj.x(), iPj.y(), iPj.z(),
                                                                                 iQj.w(), iQj.x(), iQj.y(), iQj.z(),
                                                                                 0.1, 0.01);
-                    problem.AddResidualBlock(vio_function, NULL, q_array[i], t_array[i], q_array[i+1], t_array[i+1]);
+                    problem.AddResidualBlock(vio_function, NULL, q_array[pose_i], t_array[pose_i], q_array[pose_i+1], t_array[pose_i+1]);
                 }
 
-
+			 
                 //gps factor
-                double t = iterVIO->first;// TODO: check if this should be iterVIONext  
+                double t = iterVIO->first;// TODO: check if this should be iterVIONext  this corresponds to interator pose_i
                 
-                if(newGPS){
+
+                //initialization factor if GPS is available
+                /*if (GPSPositionMap.size() >0 && pose_i<10){ // for the first 10 poses
+			     iterGPS = GPSPositionMap.find(t);
+                	if (iterGPS != GPSPositionMap.end())
+                	{
+                   	     ceres::CostFunction* gps_function = TError::Create(iterGPS->second[0], iterGPS->second[1], 
+                                                                       iterGPS->second[2], 0.3);
+                    	printf("Init. \n");
+                    	problem.AddResidualBlock(gps_function, loss_function, t_array[pose_i]);
+
+                	}
+			 } // init factor - handled below */
+
+                if(newGPS || GPSPositionMap.size() >0){
                 iterGPS = GPSPositionMap.find(t);
                 if (iterGPS != GPSPositionMap.end())
                 {
                     ceres::CostFunction* gps_function = TError::Create(iterGPS->second[0], iterGPS->second[1], 
                                                                        iterGPS->second[2], iterGPS->second[3]);
                     //printf("inverse weight %f \n", iterGPS->second[3]);
-                    problem.AddResidualBlock(gps_function, loss_function, t_array[i]);
+                    problem.AddResidualBlock(gps_function, loss_function, t_array[pose_i]);
 
                 }}//newGPS
 
 
-                if(newGPSPR){
+                if(newGPSPR || GPSPRPositionMap.size() >0){
                 iterGPSPR = GPSPRPositionMap.find(t);
                 if (iterGPSPR != GPSPRPositionMap.end())
                 {
                     ceres::CostFunction* gps_pr_function = XYError::Create(iterGPSPR->second[0], iterGPSPR->second[1], 
                                                                        iterGPSPR->second[2], iterGPSPR->second[3]);
                     //printf("inverse weight %f \n", iterGPS->second[3]);
-                    problem.AddResidualBlock(gps_pr_function, loss_function, t_array[i]);
+				cout << "recieved place recognition match with size: " << iterGPSPR->second[0]<< ','<< iterGPSPR->second[1] << " at pose node: " << pose_i << " of " << length <<endl;
+                    problem.AddResidualBlock(gps_pr_function, loss_function, t_array[pose_i]);
 
                 }}//newGPSPR
 
 
                 // O- Rot factor (FULL AHRS INPUT) --k
-                if(newRot){iterRot = globalRotMap.find(t);
+                if(newRot || globalRotMap.size() >0){iterRot = globalRotMap.find(t);
                 if (iterRot != globalRotMap.end())
                 {
                     ceres::CostFunction* rot_function = RError::Create(iterRot->second[0], iterRot->second[1], 
                                                                        iterRot->second[2], iterRot->second[3],0.01);
                     //printf("inverse weight %f \n", iterGPS->second[3]);
-                    problem.AddResidualBlock(rot_function, loss_function, q_array[i]);
+                    problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);
 
                 }}
 			
@@ -391,13 +482,14 @@ void GlobalOptimization::optimize()
 		
 				//add factor
                     ceres::CostFunction* rot_function = YError::Create(yaw_meas,0.01);
-                    problem.AddResidualBlock(rot_function, loss_function, q_array[i]);	
+                    problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);	
 
                }}*///newRot
 
               
-			//O- mag factor as heading
-               if(newMag){
+			//O- mag factor as heading // note AHRS input is implicitly added here - roll pitch from AHRS IMU, Yaw from Mag 
+               //TODO: to evaluate without Mag we need a roll pitch only global factor ( i.e. global VRU reference residual = R^T*g_E-y_vru)
+               if(newMag || magMap.size() > 0){
                iterMag = magMap.find(t);
                if (iterMag != magMap.end())
                {
@@ -432,7 +524,7 @@ void GlobalOptimization::optimize()
 
 				// add factor -error
                     //ceres::CostFunction* rot_function = YError::Create(-3*M_PI/2+yaw_mag,0.05);
-                    //problem.AddResidualBlock(rot_function, loss_function, q_array[i]);
+                    //problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);
 
 
                     Eigen::Quaterniond q_meas =  Eigen::AngleAxisd(-3*M_PI/2+yaw_mag, Eigen::Vector3d::UnitZ()) // this +90 or - 270 is needed due to baing caliberated for NWU and missing wrap to pi
@@ -441,22 +533,475 @@ void GlobalOptimization::optimize()
                     ceres::CostFunction* rot_function = RError::Create(q_meas.w(), q_meas.x(), 
                                                                        q_meas.y(), q_meas.z(),0.01);
                     //printf("inverse weight %f \n", iterGPS->second[3]);
-                    problem.AddResidualBlock(rot_function, loss_function, q_array[i]);
+                    problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);
 				//char test;
 				//cin >> test;
                }}//newMag
 
-            }
-            //mPoseMap.unlock();
+               
+               if(newCloud){
+	               // check times of the pose iterator to only trigger at correct pose
+                    //
+                    if (timeLaserCloud ==t){
+ 					flag_lidar_sync = true;	
+                         synced_pose_i = pose_i;		          
+ 					cout << "recieved feature cloud with size: " << laserCloudCornerLast->size() << ","<< 
+                         laserCloudSurfLast->size() << "at pose node: " << pose_i << "of" << length <<endl;
+                          
+	                    TicToc t_whole;
+                         // the curertn pose in global map is here : q_array[pose_i], t_array[pose_i];
+                         
+					q_w_curr.w() = q_array[pose_i][0];
+					q_w_curr.x() = q_array[pose_i][1];
+	                    q_w_curr.y() = q_array[pose_i][2];
+	                    q_w_curr.z() = q_array[pose_i][3];
+                         t_w_curr.x() = t_array[pose_i][0];
+					t_w_curr.y() = t_array[pose_i][1];
+                         t_w_curr.z() = t_array[pose_i][2];
+					//mPoseMap.unlock();
+				     
+					// move the octree so there is a 2 cube margin around the current pose for it to grow
+                         // keep the cubeindex of the current pose always >2 or < full size -2 (2 cube margin)
+                         TicToc t_shift;
+					int centerCubeI = int((t_w_curr.x() + 25.0) / 50.0) + laserCloudCenWidth;
+					int centerCubeJ = int((t_w_curr.y() + 25.0) / 50.0) + laserCloudCenHeight;
+					int centerCubeK = int((t_w_curr.z() + 25.0) / 50.0) + laserCloudCenDepth;
+
+					if (t_w_curr.x() + 25.0 < 0)
+						centerCubeI--;
+					if (t_w_curr.y() + 25.0 < 0)
+						centerCubeJ--;
+					if (t_w_curr.z() + 25.0 < 0)
+						centerCubeK--;
+
+					while (centerCubeI < 3)
+					{
+						for (int j = 0; j < laserCloudHeight; j++)
+						{
+							for (int k = 0; k < laserCloudDepth; k++)
+							{ 
+								int i = laserCloudWidth - 1;
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k]; 
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								for (; i >= 1; i--)
+								{
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudCornerArray[i - 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudSurfArray[i - 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								}
+								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeCornerPointer;
+								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeSurfPointer;
+								laserCloudCubeCornerPointer->clear();
+								laserCloudCubeSurfPointer->clear();
+							}
+						}
+
+						centerCubeI++;
+						laserCloudCenWidth++;
+					}
+
+					while (centerCubeI >= laserCloudWidth - 3)
+					{ 
+						for (int j = 0; j < laserCloudHeight; j++)
+						{
+							for (int k = 0; k < laserCloudDepth; k++)
+							{
+								int i = 0;
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								for (; i < laserCloudWidth - 1; i++)
+								{
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudCornerArray[i + 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudSurfArray[i + 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								}
+								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeCornerPointer;
+								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeSurfPointer;
+								laserCloudCubeCornerPointer->clear();
+								laserCloudCubeSurfPointer->clear();
+							}
+						}
+
+						centerCubeI--;
+						laserCloudCenWidth--;
+					}
+
+					while (centerCubeJ < 3)
+					{
+						for (int i = 0; i < laserCloudWidth; i++)
+						{
+							for (int k = 0; k < laserCloudDepth; k++)
+							{
+								int j = laserCloudHeight - 1;
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								for (; j >= 1; j--)
+								{
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudCornerArray[i + laserCloudWidth * (j - 1) + laserCloudWidth * laserCloudHeight * k];
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudSurfArray[i + laserCloudWidth * (j - 1) + laserCloudWidth * laserCloudHeight * k];
+								}
+								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeCornerPointer;
+								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeSurfPointer;
+								laserCloudCubeCornerPointer->clear();
+								laserCloudCubeSurfPointer->clear();
+							}
+						}
+
+						centerCubeJ++;
+						laserCloudCenHeight++;
+					}
+
+					while (centerCubeJ >= laserCloudHeight - 3)
+					{
+						for (int i = 0; i < laserCloudWidth; i++)
+						{
+							for (int k = 0; k < laserCloudDepth; k++)
+							{
+								int j = 0;
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								for (; j < laserCloudHeight - 1; j++)
+								{
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudCornerArray[i + laserCloudWidth * (j + 1) + laserCloudWidth * laserCloudHeight * k];
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudSurfArray[i + laserCloudWidth * (j + 1) + laserCloudWidth * laserCloudHeight * k];
+								}
+								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeCornerPointer;
+								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeSurfPointer;
+								laserCloudCubeCornerPointer->clear();
+								laserCloudCubeSurfPointer->clear();
+							}
+						}
+
+						centerCubeJ--;
+						laserCloudCenHeight--;
+					}
+
+					while (centerCubeK < 3)
+					{
+						for (int i = 0; i < laserCloudWidth; i++)
+						{
+							for (int j = 0; j < laserCloudHeight; j++)
+							{
+								int k = laserCloudDepth - 1;
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								for (; k >= 1; k--)
+								{
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k - 1)];
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k - 1)];
+								}
+								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeCornerPointer;
+								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeSurfPointer;
+								laserCloudCubeCornerPointer->clear();
+								laserCloudCubeSurfPointer->clear();
+							}
+						}
+
+						centerCubeK++;
+						laserCloudCenDepth++;
+					}
+
+					while (centerCubeK >= laserCloudDepth - 3)
+					{
+						for (int i = 0; i < laserCloudWidth; i++)
+						{
+							for (int j = 0; j < laserCloudHeight; j++)
+							{
+								int k = 0;
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+								for (; k < laserCloudDepth - 1; k++)
+								{
+									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k + 1)];
+									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+										laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k + 1)];
+								}
+								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeCornerPointer;
+								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+									laserCloudCubeSurfPointer;
+								laserCloudCubeCornerPointer->clear();
+								laserCloudCubeSurfPointer->clear();
+							}
+						}
+
+						centerCubeK--;
+						laserCloudCenDepth--;
+					}
+                         // end shift the Octree
+                        
+                         printf("Current cube index %d %d %d | for pose %f %f %f\n", centerCubeI, centerCubeJ, centerCubeK, t_w_curr.x(), t_w_curr.y(), t_w_curr.z());  
+                         //find the indexes of the clouds which are in the 2 cube neighbourhood of the current pose
+					laserCloudValidNum = 0;
+					int laserCloudSurroundNum = 0;
+
+					for (int i = centerCubeI - 2; i <= centerCubeI + 2; i++)
+					{
+						for (int j = centerCubeJ - 2; j <= centerCubeJ + 2; j++)
+						{
+							for (int k = centerCubeK - 1; k <= centerCubeK + 1; k++)
+							{
+								if (i >= 0 && i < laserCloudWidth &&
+									j >= 0 && j < laserCloudHeight &&
+									k >= 0 && k < laserCloudDepth)
+								{ 
+									laserCloudValidInd[laserCloudValidNum] = i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k;
+									laserCloudValidNum++;
+									laserCloudSurroundInd[laserCloudSurroundNum] = i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k;
+									laserCloudSurroundNum++;
+								}
+							}
+						}
+					}
+
+
+                         // use those indexes to create a map of the surrounding
+					laserCloudCornerFromMap->clear();
+					laserCloudSurfFromMap->clear();
+
+					for (int i = 0; i < laserCloudValidNum; i++)
+					{
+						*laserCloudCornerFromMap += *laserCloudCornerArray[laserCloudValidInd[i]];
+						*laserCloudSurfFromMap += *laserCloudSurfArray[laserCloudValidInd[i]];
+					}
+					laserCloudCornerFromMapNum = laserCloudCornerFromMap->points.size();
+					laserCloudSurfFromMapNum = laserCloudSurfFromMap->points.size();
+
+                         // include the current laser points in a down sampled pcl cloud   
+                         //mPoseMap.lock();
+					laserCloudCornerStack->clear();
+					downSizeFilterCorner.setInputCloud(laserCloudCornerLast);
+					downSizeFilterCorner.filter(*laserCloudCornerStack);
+					laserCloudCornerStackNum = laserCloudCornerStack->points.size();
+
+					laserCloudSurfStack->clear();
+					downSizeFilterSurf.setInputCloud(laserCloudSurfLast);
+					downSizeFilterSurf.filter(*laserCloudSurfStack);
+					laserCloudSurfStackNum = laserCloudSurfStack->points.size();
+                         //mPoseMap.unlock();
+
+					printf("map prepare time %f ms\n", t_shift.toc());
+					printf("map corner num %d  surf num %d \n", laserCloudCornerFromMapNum, laserCloudSurfFromMapNum);
+                         printf("stack corner num %d  surf num %d \n", laserCloudCornerStackNum, laserCloudSurfStackNum);  
+                         //scan matching - sent to optimization
+                
+					
+
+                         // post optimization steps are resumed after global path update below
+                         //mPoseMap.lock();
+
+                    }//sync-found
+            	}//newCloud	
+
+            }// pose graph iterator    
             newGPS = false;
             newRot = false;
             newMag = false;
-          
-            ceres::Solve(options, &problem, &summary);
-            //std::cout << summary.BriefReport() << "\n";
-        
+            newCloud = false;
+            newGPSPR = false;
+            mPoseMap.unlock();
+
+		            
+		  if(flag_lidar_sync && laserCloudCornerFromMapNum > 10 && laserCloudSurfFromMapNum > 50){
+			
+			TicToc t_tree;
+               kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMap);
+			kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMap);
+			printf("build tree time %f ms \n", t_tree.toc());			
+			
+			TicToc t_opt;
+			for (int iterCount = 0; iterCount < 2; iterCount++) // iterate twice for ICP- break if no matches
+			{
+				TicToc t_data;
+				int corner_num = 0;
+				for (int i = 0; i < laserCloudCornerStackNum; i++){
+					pointOri = laserCloudCornerStack->points[i];
+					//double sqrtDis = pointOri.x * pointOri.x + pointOri.y * pointOri.y + pointOri.z * pointOri.z;
+					pointAssociateToMap(&pointOri, &pointSel); // warning uses the global t_w_curr
+					kdtreeCornerFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis); // find the nearest 5
+
+					if (pointSearchSqDis[4] < 1.0)
+					{ 
+						std::vector<Eigen::Vector3d> nearCorners;
+						Eigen::Vector3d center(0, 0, 0);
+						// mean of nearest points
+						for (int j = 0; j < 5; j++)
+						{
+							Eigen::Vector3d tmp(laserCloudCornerFromMap->points[pointSearchInd[j]].x,
+											laserCloudCornerFromMap->points[pointSearchInd[j]].y,
+											laserCloudCornerFromMap->points[pointSearchInd[j]].z);
+							center = center + tmp;
+							nearCorners.push_back(tmp);
+						}
+						center = center / 5.0;
+
+						//covariance matrix of nearest points
+						Eigen::Matrix3d covMat = Eigen::Matrix3d::Zero();
+						for (int j = 0; j < 5; j++)
+						{
+							Eigen::Matrix<double, 3, 1> tmpZeroMean = nearCorners[j] - center;
+							covMat = covMat + tmpZeroMean * tmpZeroMean.transpose();
+						}
+
+						Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(covMat);
+
+						// if is indeed line feature ( checks the highest eigen value is larger than 3 times the second smallest)
+						// note Eigen library sort eigenvalues in increasing order
+						Eigen::Vector3d unit_direction = saes.eigenvectors().col(2);
+    						Eigen::Vector3d curr_point_L(pointOri.x, pointOri.y, pointOri.z);
+                               
+                              //O - change the current point to IMU frame  
+                              Eigen::Vector3d curr_point = q_I_L * curr_point_L + t_I_L;                 
+
+						if (saes.eigenvalues()[2] > 3 * saes.eigenvalues()[1])
+						{ 
+							Eigen::Vector3d point_on_line = center;
+							Eigen::Vector3d point_a, point_b;
+							point_a = 0.1 * unit_direction + point_on_line; //find two points to define the line
+							point_b = -0.1 * unit_direction + point_on_line;
+
+							ceres::CostFunction *cost_function = LidarEdgeFactor::Create(curr_point, point_a, point_b, 1.0);
+							problem.AddResidualBlock(cost_function, loss_function, q_array[synced_pose_i], t_array[synced_pose_i]);
+							corner_num++;	
+						}							
+					}
+					/*
+					else if(pointSearchSqDis[4] < 0.01 * sqrtDis)
+					{
+						Eigen::Vector3d center(0, 0, 0);
+						for (int j = 0; j < 5; j++)
+						{
+							Eigen::Vector3d tmp(laserCloudCornerFromMap->points[pointSearchInd[j]].x,
+													laserCloudCornerFromMap->points[pointSearchInd[j]].y,
+													laserCloudCornerFromMap->points[pointSearchInd[j]].z);
+							center = center + tmp;
+						}
+						center = center / 5.0;	
+						Eigen::Vector3d curr_point(pointOri.x, pointOri.y, pointOri.z);
+						ceres::CostFunction *cost_function = LidarDistanceFactor::Create(curr_point, center);
+						problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 4);
+					}
+					*/
+				}
+								
+
+				int surf_num = 0;
+				for (int i = 0; i < laserCloudSurfStackNum; i++)
+				{
+					pointOri = laserCloudSurfStack->points[i];
+					//double sqrtDis = pointOri.x * pointOri.x + pointOri.y * pointOri.y + pointOri.z * pointOri.z;
+					pointAssociateToMap(&pointOri, &pointSel);
+					kdtreeSurfFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
+
+					Eigen::Matrix<double, 5, 3> matA0;
+					Eigen::Matrix<double, 5, 1> matB0 = -1 * Eigen::Matrix<double, 5, 1>::Ones();
+					if (pointSearchSqDis[4] < 1.0)				
+					{						
+						for (int j = 0; j < 5; j++)
+						{
+							matA0(j, 0) = laserCloudSurfFromMap->points[pointSearchInd[j]].x;
+							matA0(j, 1) = laserCloudSurfFromMap->points[pointSearchInd[j]].y;
+							matA0(j, 2) = laserCloudSurfFromMap->points[pointSearchInd[j]].z;
+							//printf(" pts %f %f %f ", matA0(j, 0), matA0(j, 1), matA0(j, 2));
+						}
+						// find the norm of plane
+						Eigen::Vector3d norm = matA0.colPivHouseholderQr().solve(matB0);
+						double negative_OA_dot_norm = 1 / norm.norm();
+						norm.normalize();
+
+						// Here n(pa, pb, pc) is unit norm of plane
+						bool planeValid = true;
+						for (int j = 0; j < 5; j++)
+						{
+							// if OX * n > 0.2, then plane is not fit well
+							if (fabs(norm(0) * laserCloudSurfFromMap->points[pointSearchInd[j]].x +
+								norm(1) * laserCloudSurfFromMap->points[pointSearchInd[j]].y +
+								norm(2) * laserCloudSurfFromMap->points[pointSearchInd[j]].z + negative_OA_dot_norm) > 0.2)
+							{
+								planeValid = false;
+								break;
+							}
+						}
+						Eigen::Vector3d curr_point_L(pointOri.x, pointOri.y, pointOri.z);
+                               
+                              //O - change the current point to IMU frame  
+                              Eigen::Vector3d curr_point = q_I_L * curr_point_L + t_I_L;
+						if (planeValid)
+						{
+							ceres::CostFunction *cost_function = LidarPlaneNormFactor::Create(curr_point, norm, negative_OA_dot_norm);
+							problem.AddResidualBlock(cost_function, loss_function, q_array[synced_pose_i], t_array[synced_pose_i]);
+							surf_num++;
+						}
+					}
+					/*
+					else if(pointSearchSqDis[4] < 0.01 * sqrtDis)
+					{
+						Eigen::Vector3d center(0, 0, 0);
+						for (int j = 0; j < 5; j++)
+						{
+							Eigen::Vector3d tmp(laserCloudSurfFromMap->points[pointSearchInd[j]].x,
+												laserCloudSurfFromMap->points[pointSearchInd[j]].y,
+												laserCloudSurfFromMap->points[pointSearchInd[j]].z);
+							center = center + tmp;
+						}
+						center = center / 5.0;	
+						Eigen::Vector3d curr_point(pointOri.x, pointOri.y, pointOri.z);
+						ceres::CostFunction *cost_function = LidarDistanceFactor::Create(curr_point, center);
+						problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 4);
+					}
+					*/
+				}
+
+				printf("corner num %d used corner num %d \n", laserCloudCornerStackNum, corner_num);
+			     printf("surf num %d used surf num %d \n", laserCloudSurfStackNum, surf_num);
+				printf("mapping data assosiation time %f ms \n", t_data.toc());
+
+				ceres::Solve(options, &problem, &summary);
+
+				if(corner_num<5 && surf_num <5){ // there is not enough associations break
+					ROS_WARN("Insufficient Lidar feature matches");
+					break;
+				}
+			}
+		  }
+		  else{ //this is the update without scan matching
+		  	ROS_WARN("No Lidar update");
+            	ceres::Solve(options, &problem, &summary);
+            	//std::cout << summary.BriefReport() << "\n";
+            }
             // update global pose
-            //mPoseMap.lock();
+            mPoseMap.lock();
             iter = globalPoseMap.begin();
             for (int i = 0; i < length; i++, iter++)
             {
@@ -480,7 +1025,100 @@ void GlobalOptimization::optimize()
           
             updateGlobalPath();
           
-		  //printf("global time %f \n", globalOptimizationTime.toc());
+		  
+
+
+            // completing the rest of the lidar mapping steps
+            if(flag_lidar_sync){
+               // the pose graph is now updated by the optimizer -- retrieve current scan pose
+			q_w_curr.w() = q_array[synced_pose_i][0];
+			q_w_curr.x() = q_array[synced_pose_i][1];
+	          q_w_curr.y() = q_array[synced_pose_i][2];
+	          q_w_curr.z() = q_array[synced_pose_i][3];
+               t_w_curr.x() = t_array[synced_pose_i][0];
+			t_w_curr.y() = t_array[synced_pose_i][1];
+               t_w_curr.z() = t_array[synced_pose_i][2];			
+			
+			// start adding scans to the map			
+			TicToc t_add;
+			for (int i = 0; i < laserCloudCornerStackNum; i++)
+			{
+				pointAssociateToMap(&laserCloudCornerStack->points[i], &pointSel);
+
+				int cubeI = int((pointSel.x + 25.0) / 50.0) + laserCloudCenWidth;
+				int cubeJ = int((pointSel.y + 25.0) / 50.0) + laserCloudCenHeight;
+				int cubeK = int((pointSel.z + 25.0) / 50.0) + laserCloudCenDepth;
+
+				if (pointSel.x + 25.0 < 0)
+					cubeI--;
+				if (pointSel.y + 25.0 < 0)
+					cubeJ--;
+				if (pointSel.z + 25.0 < 0)
+					cubeK--;
+
+				if (cubeI >= 0 && cubeI < laserCloudWidth &&
+					cubeJ >= 0 && cubeJ < laserCloudHeight &&
+					cubeK >= 0 && cubeK < laserCloudDepth)
+				{
+					int cubeInd = cubeI + laserCloudWidth * cubeJ + laserCloudWidth * laserCloudHeight * cubeK;
+					laserCloudCornerArray[cubeInd]->push_back(pointSel);
+				}
+
+				//debugging
+				/*if(i<10){
+					printf("Last cube index %d %d %d | for point %f %f %f | for pose %f %f %f \n", cubeI, cubeJ, cubeK, pointSel.x, pointSel.y, pointSel.z, t_w_curr.x(), t_w_curr.y(), t_w_curr.z() );
+				}*/
+
+			}
+
+			  
+               
+
+			for (int i = 0; i < laserCloudSurfStackNum; i++)
+			{
+				pointAssociateToMap(&laserCloudSurfStack->points[i], &pointSel);
+
+				int cubeI = int((pointSel.x + 25.0) / 50.0) + laserCloudCenWidth;
+				int cubeJ = int((pointSel.y + 25.0) / 50.0) + laserCloudCenHeight;
+				int cubeK = int((pointSel.z + 25.0) / 50.0) + laserCloudCenDepth;
+
+				if (pointSel.x + 25.0 < 0)
+					cubeI--;
+				if (pointSel.y + 25.0 < 0)
+					cubeJ--;
+				if (pointSel.z + 25.0 < 0)
+					cubeK--;
+
+				if (cubeI >= 0 && cubeI < laserCloudWidth &&
+					cubeJ >= 0 && cubeJ < laserCloudHeight &&
+					cubeK >= 0 && cubeK < laserCloudDepth)
+				{
+					int cubeInd = cubeI + laserCloudWidth * cubeJ + laserCloudWidth * laserCloudHeight * cubeK;
+					laserCloudSurfArray[cubeInd]->push_back(pointSel);
+				}
+			}
+			printf("add points time %f ms\n", t_add.toc());
+			
+			TicToc t_filter;
+			for (int i = 0; i < laserCloudValidNum; i++)
+			{
+				int ind = laserCloudValidInd[i];
+
+				pcl::PointCloud<PointType>::Ptr tmpCorner(new pcl::PointCloud<PointType>());
+				downSizeFilterCorner.setInputCloud(laserCloudCornerArray[ind]);
+				downSizeFilterCorner.filter(*tmpCorner);
+				laserCloudCornerArray[ind] = tmpCorner;
+
+				pcl::PointCloud<PointType>::Ptr tmpSurf(new pcl::PointCloud<PointType>());
+				downSizeFilterSurf.setInputCloud(laserCloudSurfArray[ind]);
+				downSizeFilterSurf.filter(*tmpSurf);
+				laserCloudSurfArray[ind] = tmpSurf;
+			}
+			printf("filter time %f ms \n", t_filter.toc());
+
+	          flag_lidar_sync = false;
+		  }
+
 
 		  if(newCloudFullRes){
 			  // use the vio pose to convert the cloud to the global frame and update the pcl cloud	
@@ -489,9 +1127,18 @@ void GlobalOptimization::optimize()
 
 		  }
 
-            mPoseMap.unlock();
+
+		 // update teh publish cloud
+           
+          printf("global time %f \n", globalOptimizationTime.toc());
+          printf("--------------------------------------- \n");
+          mPoseMap.unlock();
+
+
+		
+           
         }
-        std::chrono::milliseconds dura(2000);
+        std::chrono::milliseconds dura(500);  // delay 2 seconds // should target time - spent time
         std::this_thread::sleep_for(dura);
     }
 	return;

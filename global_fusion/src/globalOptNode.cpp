@@ -73,7 +73,7 @@ typedef vector< tuple<size_t, size_t> > TupleList;
 
 GlobalOptimization globalEstimator;
 ros::Publisher pub_global_odometry, pub_global_path, pub_gps_path, pub_ppk_path, pub_frl_path, pub_car;
-ros::Publisher pubLaserCloudSurround, pubLaserCloudMap, pubLaserCloudFullRes, pubOdomAftMapped, pubOdomAftMappedHighFrec, pubLaserAfterMappedPath, pubLaserCloudMapSurround;
+ros::Publisher pubLaserCloudSurround, pubLaserCloudMap, pubLaserCloudFullRes, pubOdomAftMapped, pubOdomAftMappedHighFrec, pubLaserAfterMappedPath, pubLaserCloudMapSurround, pubLaserCloudMapLZ;
 nav_msgs::Path *global_path;
 nav_msgs::Path *gps_path; // this is used to plot the gps_message path
 nav_msgs::Path *ppk_path; // this is used to plot the gps_message path
@@ -90,10 +90,11 @@ std::mutex m_buf;
 bool rtk_unreliable = true;  //TODO  : send to config file // to cehck status of the GPS
 bool use_gps = false;  // uses the raw rtk gps from fix
 bool use_ppk = false;  //TODO  : send to config file
-bool use_frl = false;  //TODO  : send to config file
+bool use_frl = true;  //TODO  : send to config file
 bool use_frl_rot = false; // this one makes it use only the rotation
-bool use_mag_head = true;// this one performs a heading only update
-bool use_vio_atti = false;// this one performs a ref vector update (good for roll pitch global update using vio)
+// nate GPS is updated only 10 times to initialize
+bool use_mag_head = true;// this one performs a heading only update  (currently this one performs a heading and vio atti update)
+bool use_vio_atti = false;// TODO: this one should performs a ref vector update (good for roll pitch global update using vio)
 bool viz_ppk = false;  //TODO  : send to config file
 bool viz_frl = true;  //TODO  : send to config file
 bool use_lidar = true; // performs lidar mapping
@@ -102,6 +103,7 @@ bool use_lz_seg =true;
 std::string ppk_pos_file = "/storage_ssd/bell412Dataset1/bell412_dataset1_ppk.pos"; //TODO  : send to config file
 std::string frl_pos_file = "/storage_ssd/bell412_dataset1/bell412_dataset1_frl.pos"; //TODO  : send to config file
 //std::string frl_pos_file = "/storage_ssd/bell412_dataset6/bell412_dataset6_frl.pos";
+//std::string frl_pos_file = "/storage_ssd/bell412_dataset4/bell412_dataset4_frl.pos";
 //std::string frl_pos_file = "/storage_ssd/bell412_dataset1/bell412_dataset1_frl.pos";
 //std::string frl_pos_file = "/media/EC3C-97F9/bell412_data_capture_NRC/bell412_dataset5_frl.pos"; //TODO  : send to config file
 std::string nmeaSentence = {};
@@ -123,15 +125,35 @@ sensor_msgs::NavSatFix fix_ppk_msg;
 geometry_msgs::QuaternionStamped rot_msg;
 
 //input & output: points in one frame. local --> global
-pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
+
 pcl::PointCloud<PointType> laserCloudFullMap;
-std::queue<sensor_msgs::PointCloud2ConstPtr> fullResBuf;
+pcl::PointCloud<pcl::PointXYZRGB> laserCloudFullMapLZ;
+pcl::PointCloud<PointType>::Ptr laserCloudSurround(new pcl::PointCloud<PointType>());
+
 double timeLaserCloudFullResLast = 0; //used to check if theres any new cloud to process
-double timeLaserCloudFullRes = 0;
+//double timeLaserCloudFullRes = 0;
 int path_start_index = 0;
+int path_start_index_pr = 0;
 int frameCount = 0;
 bool map_init = false;
+bool map_lzinit = false;
 pcl::VoxelGrid<PointType> downSizeFilterFull;
+pcl::VoxelGrid<pcl::PointXYZRGB> downSizeFilterFullLZ;
+
+
+// scan matching
+// input output buffer
+std::queue<sensor_msgs::PointCloud2ConstPtr> cornerLastBuf;
+std::queue<sensor_msgs::PointCloud2ConstPtr> surfLastBuf;
+std::queue<sensor_msgs::PointCloud2ConstPtr> fullResBuf;
+double timeLaserCloudCornerLast = 0.0;
+double timeLaserCloudSurfLast = 0.0;
+double timeLaserCloudFullRes = 0.0;
+
+// synced LiDAr message
+pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
+pcl::PointCloud<PointType>::Ptr laserCloudCornerLast(new pcl::PointCloud<PointType>());
+pcl::PointCloud<PointType>::Ptr laserCloudSurfLast(new pcl::PointCloud<PointType>());
 
 
 //Octree
@@ -246,7 +268,7 @@ bool classicalSegmentFunction(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloudIn){
 
 
                     if((! isnan(coeffA)) && (! isnan(coeffB)) && (coeffA > -slope_thresh) && (coeffA < slope_thresh) && (coeffB > -slope_thresh) && (coeffB < slope_thresh)  && ((zmax-zmin) < z_th)){
-                        ROS_INFO("inlier per %f, %f, %f, %f, %f. %f, %f", coeffA, coeffB, coeffD, zmax, zmin, cloudSize,inlier_percentage);
+                        //ROS_INFO("inlier per %f, %f, %f, %f, %f. %f, %f", coeffA, coeffB, coeffD, zmax, zmin, cloudSize,inlier_percentage);
                         return true;
                     }else{
                         return false;
@@ -376,14 +398,7 @@ void publish_car_model(double t, Eigen::Vector3d t_w_car, Eigen::Quaterniond q_w
     pub_car.publish(markerArray_msg);
 }	
 
-void PR_GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
-{
-    if(!use_pr_gps) return;
-    m_buf.lock();
-    prgpsQueue.push(GPS_msg);
-    m_buf.unlock();
 
-}
 
 void GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
 {
@@ -476,6 +491,7 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
 
     //printf("vio_callback! \n");
     
+    
     Eigen::Vector3d vio_t(pose_msg->pose.pose.position.x, pose_msg->pose.pose.position.y, pose_msg->pose.pose.position.z);
     Eigen::Quaterniond vio_q;
     vio_q.w() = pose_msg->pose.pose.orientation.w;
@@ -483,7 +499,7 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
     vio_q.y() = pose_msg->pose.pose.orientation.y;
     vio_q.z() = pose_msg->pose.pose.orientation.z;
     globalEstimator.inputOdom(t, vio_t, vio_q);
-    
+    printf("v");
     
     // add GPS factors to the graph
     m_buf.lock();
@@ -510,6 +526,7 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
 		else {
 			globalEstimator.inputGPS(t, latitude, longitude, altitude, pos_accuracy);
 		}
+          printf("g");
             }
             gpsQueue.pop();
             break;
@@ -524,7 +541,7 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
 
 
     // add Place recognition factors to the graph
-    while(!prgpsQueue.empty())
+    /*while(!prgpsQueue.empty())
     {
         sensor_msgs::NavSatFixConstPtr GPS_msg = prgpsQueue.front();
         double gps_t = GPS_msg->header.stamp.toSec();
@@ -533,14 +550,14 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
         //if(gps_t >= t - 0.01 && gps_t <= t + 0.01)
         if(gps_t >= t - 0.1 && gps_t <= t + 0.1) //TODO: get from config ( this can be larger for unsynced data)  
         {
-            //printf("receive GPS with timestamp %f\n", GPS_msg->header.stamp.toSec());
+            printf("receive GPS with timestamp %f\n", GPS_msg->header.stamp.toSec());
             double latitude = GPS_msg->latitude;
             double longitude = GPS_msg->longitude;
             double altitude = GPS_msg->altitude;
             int fixstatus = GPS_msg->status.status;  //this is 2 for rtk and 
             double pos_accuracy = GPS_msg->position_covariance[0];
  		  if(fixstatus == 2 ){
-                	//printf("synced| receive covariance %lf | fix status(2:RTK) %i \n", pos_accuracy, fixstatus); // use this to check gps sync errors
+                	printf("synced| receive covariance %lf | fix status(2:RTK) %i \n", pos_accuracy, fixstatus); // use this to check gps sync errors
                 	globalEstimator.inputGPSPR(t, latitude, longitude, altitude, pos_accuracy); }
 		  //if(fixstatus == 1 ){
                 	//printf("synced| receive covariance %lf | fix status(2:RTK) %i \n", pos_accuracy, fixstatus); // use this to check gps sync errors
@@ -550,11 +567,11 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
         }
         //else if(gps_t < t - 0.01)
         else if(gps_t < t - 0.1)
-            gpsQueue.pop();
+            prgpsQueue.pop();
         //else if(gps_t > t + 0.01)
         else if(gps_t > t + 0.1)
             break;
-    }
+    }*/
 
 
 
@@ -596,12 +613,13 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
         if(mag_t >= t - 0.05 && mag_t <= t + 0.05) //TODO: get from config ( this can be larger for unsynced data)  
         {
             //printf("receive GPS with timestamp %f\n", GPS_msg->header.stamp.toSec());
-            printf("vio t: %f, mag t: %f \n", t, mag_t);
+            //printf("vio t: %f, mag t: %f \n", t, mag_t);
             double mag_x = mag_msg->vector.x;
             double mag_y = mag_msg->vector.y;
             double mag_z = mag_msg->vector.z;
             double mag_accuracy = 0.1;
             globalEstimator.inputMag(t, mag_x, mag_y, mag_z, mag_accuracy);
+            printf("m");
             magQueue.pop();
             break;
         }
@@ -611,6 +629,67 @@ void vio_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
         else if(mag_t > t + 0.05)
             break;
     }
+
+   
+
+    //input lidar surfs to pose graph 
+    bool flag_Cornersfound = false;
+    while((!cornerLastBuf.empty() ))
+    {
+
+        timeLaserCloudCornerLast = cornerLastBuf.front()->header.stamp.toSec();
+	   //timeLaserCloudSurfLast = surfLastBuf.front()->header.stamp.toSec();
+	   //timeLaserCloudFullRes = fullResBuf.front()->header.stamp.toSec();
+	   // 10ms sync tolerance (LiDar expected to have 10Hz update)
+        if(timeLaserCloudCornerLast >= t - 0.05 && timeLaserCloudCornerLast <= t + 0.05)
+        {
+          //printf("vio t: %f, liDAR t: %f \n", t, timeLaserCloudCornerLast); /// we can recieve lidar much later than the stamp....
+          //printf("*******vio t: %f, cld C t: %f diff: %f ***********\n", t, timeLaserCloudCornerLast, t-timeLaserCloudCornerLast);
+          laserCloudCornerLast->clear();
+		pcl::fromROSMsg(*cornerLastBuf.front(), *laserCloudCornerLast);
+		cornerLastBuf.pop();
+          flag_Cornersfound = true;    
+          break;
+          // TODO: include in pose graph
+        }
+        else if(timeLaserCloudCornerLast < t - 0.05)
+           cornerLastBuf.pop();
+        else if(timeLaserCloudCornerLast > t + 0.05)
+           break;	
+    }
+
+    // include surface handling
+    while((!surfLastBuf.empty() ))
+    {
+
+	   timeLaserCloudSurfLast = surfLastBuf.front()->header.stamp.toSec();
+	   //timeLaserCloudFullRes = fullResBuf.front()->header.stamp.toSec();
+	   // 10ms sync tolerance (LiDar expected to have 10Hz update)
+        if(timeLaserCloudSurfLast >= t - 0.05 && timeLaserCloudSurfLast <= t + 0.05)
+        {
+          //printf("vio t: %f, liDAR t: %f \n", t, timeLaserCloudCornerLast); /// we can recieve lidar much later than the stamp....
+          //printf("*******vio t: %f, cld S t: %f diff: %f ***********\n", t, timeLaserCloudSurfLast, t-timeLaserCloudSurfLast);
+          laserCloudSurfLast->clear();
+		pcl::fromROSMsg(*surfLastBuf.front(), *laserCloudSurfLast);
+		surfLastBuf.pop();
+          if(flag_Cornersfound){  
+			globalEstimator.inputSurfnCorners(t,laserCloudCornerLast, laserCloudSurfLast);
+               printf("L %d\n", frameCount);}
+          else{
+			//(kusal) printf("time corner %f surf %f odom %f \n", timeLaserCloudCornerLast, timeLaserCloudSurfLast, t, surfLastBuf.size());
+			//(kusal) printf("unsync messeage!");
+	}
+          break;
+          // TODO: include in pose graph
+        }
+        else if(timeLaserCloudSurfLast < t - 0.05)
+           surfLastBuf.pop();
+        else if(timeLaserCloudSurfLast > t + 0.05)
+           break;
+
+     //printf("Buff corner %i surf %i \n", cornerLastBuf.size(), surfLastBuf.size());	
+    }
+   
 
     
     
@@ -844,7 +923,7 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
 	  } // ppk read loop
     }//check open file
     else std::cout << "Unable to open file1";
-    cout<<"---------------------------"<<endl;
+    //cout<<"---------------------------"<<endl;
     }//check ppk processing flags
 
    if(use_frl || viz_frl || use_frl_rot){
@@ -976,7 +1055,7 @@ void nmeaCallback(const nmea_msgs::Sentence::ConstPtr& msg)
 	  } // frl read loop
     }//check open file
     else std::cout << "Unable to open file2";
-    cout<<"---------------------------"<<endl;
+    //cout<<"---------------------------"<<endl;
     }//check frl processing flags
    
 }
@@ -991,6 +1070,80 @@ void pointAssociateToMap(PointType const *const pi, PointType *const po,Eigen::Q
 	po->intensity = pi->intensity;
 	//po->intensity = 1.0;
 }
+
+void laserCloudCornerLastHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudCornerLast2)
+{
+     if(!use_lidar){ return;}
+	m_buf.lock();
+	cornerLastBuf.push(laserCloudCornerLast2);
+	m_buf.unlock();
+}
+
+void laserCloudSurfLastHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudSurfLast2)
+{
+     if(!use_lidar){ return;}
+	m_buf.lock();
+	surfLastBuf.push(laserCloudSurfLast2);
+	m_buf.unlock();
+}
+
+
+void PR_GPS_callback(const sensor_msgs::NavSatFixConstPtr &GPS_msg)
+{
+    if(!use_pr_gps) return;
+    m_buf.lock();
+    prgpsQueue.push(GPS_msg);
+    m_buf.unlock();
+    
+
+    double timePRGPS = prgpsQueue.front()->header.stamp.toSec();
+
+
+
+    bool sync_found = false;
+    printf("recieved prgps t: %f \n", timePRGPS);
+    
+    double last_update_time = globalEstimator.last_update_time; //TODO: update to latest time in the global map
+    if (last_update_time == 0.0) return; // still initializing
+    if (last_update_time-timePRGPS < 0.0) return;  // we have to wait
+
+    for (int i =path_start_index_pr; i<global_path->poses.size();i++){
+       double vio_t = global_path->poses[i].header.stamp.toSec();
+       if(vio_t >= timePRGPS - 0.1 && vio_t <= timePRGPS + 0.1) 
+          {
+       
+            printf("*******vio t: %f, prgps t: %f diff: %f ***********\n", vio_t, timePRGPS, vio_t-timePRGPS); 
+
+            double latitude = GPS_msg->latitude;
+            double longitude = GPS_msg->longitude;
+            double altitude = GPS_msg->altitude;
+            int fixstatus = GPS_msg->status.status;  //this is 2 for rtk and 
+            double pos_accuracy = GPS_msg->position_covariance[0];
+ 		  if(fixstatus == 2 ){
+                	printf("sent to factor graph %f \n", vio_t); // use this to check gps sync errors
+                	globalEstimator.inputGPSPR(vio_t, latitude, longitude, altitude, 1); }
+            sync_found = true;
+            path_start_index_pr = i;
+
+            // manage buffer
+            if (prgpsQueue.size()>10){
+            prgpsQueue.pop();prgpsQueue.pop(); //catch up
+		  }
+		  else{ prgpsQueue.pop();}
+            
+ 
+            break;
+          }
+		// if end is reached pop the cloud buffer
+		if(i == global_path->poses.size()-1){
+               printf("*******no sync vio t: %f, prgps t: %f  ***********\n", vio_t, timePRGPS );
+               if (vio_t > timePRGPS +5) {prgpsQueue.pop();  printf("removing old pr gps\n");}
+		}
+    }
+
+}
+
+
 
 void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudFullRes2)
 {
@@ -1024,18 +1177,19 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
           if(vio_t >= timeLaserCloudFullRes - 0.07 && vio_t <= timeLaserCloudFullRes + 0.07) 
           {
        
-            printf("*******vio t: %f, cloud t: %f diff: %f ***********\n", vio_t, timeLaserCloudFullRes, vio_t-timeLaserCloudFullRes);        
+            //(kusal) printf("*******vio t: %f, cloud t: %f diff: %f ***********\n", vio_t, timeLaserCloudFullRes, vio_t-timeLaserCloudFullRes);        
             synced_time = vio_t;
             synced_pose = global_path->poses[i];
             sync_found = true;
             frameCount++;
+            if(frameCount>50) use_frl = false; use_frl_rot = false; //O -  first 5 second GPS update
             laserCloudFullRes->clear();
 		  pcl::fromROSMsg(*fullResBuf.front(), *laserCloudFullRes);
             if (fullResBuf.size()>5){
             fullResBuf.pop();fullResBuf.pop(); //catch up
 		  }
 		  else{ fullResBuf.pop();}
-            cout<< "pcl buff size"<<fullResBuf.size() << endl;
+            //cout<< "pcl buff size"<<fullResBuf.size() << endl;
             path_start_index = i;
             break;
           }
@@ -1057,61 +1211,61 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
 		t_w_curr.y() = synced_pose.pose.position.y;
 		t_w_curr.z() = synced_pose.pose.position.z;
 	
-     //5.associate to map
-     /*int laserCloudFullResNum = laserCloudFullRes->points.size();
-     for (int i = 0; i < laserCloudFullResNum; i++)
-	{
-	   pointAssociateToMap(&laserCloudFullRes->points[i], &laserCloudFullRes->points[i], q_w_curr, t_w_curr);
-	}*/
-     Eigen::Matrix4d Tmat_IC;
-     Tmat_IC.setIdentity();   // Set to Identity to make bottom row of Matrix 0,0,0,1
-     Tmat_IC.block<3,3>(0,0) = RIC[0];
-     Tmat_IC.block<3,1>(0,3) = TIC[0];
+		//5.associate to map
+		/*int laserCloudFullResNum = laserCloudFullRes->points.size();
+		for (int i = 0; i < laserCloudFullResNum; i++)
+		{
+		   pointAssociateToMap(&laserCloudFullRes->points[i], &laserCloudFullRes->points[i], q_w_curr, t_w_curr);
+		}*/
+		Eigen::Matrix4d Tmat_IC;
+		Tmat_IC.setIdentity();   // Set to Identity to make bottom row of Matrix 0,0,0,1
+		Tmat_IC.block<3,3>(0,0) = RIC[0];
+		Tmat_IC.block<3,1>(0,3) = TIC[0];
 
-     Eigen::Matrix4d Tmat_CL;
-     Tmat_CL.setIdentity();   // Set to Identity to make bottom row of Matrix 0,0,0,1
-     Tmat_CL.block<3,3>(0,0) = RCL[0];
-     Tmat_CL.block<3,1>(0,3) = TCL[0];
-   
+		Eigen::Matrix4d Tmat_CL;
+		Tmat_CL.setIdentity();   // Set to Identity to make bottom row of Matrix 0,0,0,1
+		Tmat_CL.block<3,3>(0,0) = RCL[0];
+		Tmat_CL.block<3,1>(0,3) = TCL[0];
+	   
 
-     Eigen::Affine3f transadjust = pcl::getTransformation(L_C_tx, L_C_ty, L_C_tz, L_C_rx, L_C_ry, L_C_rz);
-     Eigen::Matrix4f Tmat_LLadjf = transadjust.matrix();
-     Eigen::Matrix4d Tmat_LLadj = Tmat_LLadjf.cast<double>();
-     
-     Eigen::Affine3d aff = Eigen::Affine3d::Identity();
-     aff.translation() = t_w_curr;
-     aff.linear() = q_w_curr.normalized().toRotationMatrix();
-     Eigen::Matrix4d Tmat_WB = aff.matrix();
-   
-     Eigen::Matrix4d Tmat_IL = Tmat_IC * Tmat_CL;
-    
-     Eigen::Matrix4d Tmat_WL = Tmat_WB * Tmat_IL;   // in LVI code this is done by keeping a body ros frame in tf tree
+		Eigen::Affine3f transadjust = pcl::getTransformation(L_C_tx, L_C_ty, L_C_tz, L_C_rx, L_C_ry, L_C_rz);
+		Eigen::Matrix4f Tmat_LLadjf = transadjust.matrix();
+		Eigen::Matrix4d Tmat_LLadj = Tmat_LLadjf.cast<double>();
+		
+		Eigen::Affine3d aff = Eigen::Affine3d::Identity();
+		aff.translation() = t_w_curr;
+		aff.linear() = q_w_curr.normalized().toRotationMatrix();
+		Eigen::Matrix4d Tmat_WB = aff.matrix();
+	   
+		Eigen::Matrix4d Tmat_IL = Tmat_IC * Tmat_CL;
+	    
+		Eigen::Matrix4d Tmat_WL = Tmat_WB * Tmat_IL;   // in LVI code this is done by keeping a body ros frame in tf tree
 
-     Eigen::Matrix4d Tmat_WLadj = Tmat_WL * Tmat_LLadj;
-      
+		Eigen::Matrix4d Tmat_WLadj = Tmat_WL * Tmat_LLadj;
+		 
 
-     pcl::transformPointCloud(*laserCloudFullRes, *laserCloudFullRes, Tmat_WLadj.cast<float>());
+		pcl::transformPointCloud(*laserCloudFullRes, *laserCloudFullRes, Tmat_WLadj.cast<float>());
 
-     
+		
 
-  
-	//6.down sample and add to map 
-     pcl::PointCloud<PointType>::Ptr laserCloudFullDS(new pcl::PointCloud<PointType>());
-	downSizeFilterFull.setInputCloud(laserCloudFullRes);
-	downSizeFilterFull.filter(*laserCloudFullDS);
+	  
+		//6.down sample and add to map 
+		pcl::PointCloud<PointType>::Ptr laserCloudFullDS(new pcl::PointCloud<PointType>());
+		downSizeFilterFull.setInputCloud(laserCloudFullRes);
+		downSizeFilterFull.filter(*laserCloudFullDS);
 
-     if (!map_init){	
-          laserCloudFullMap = *laserCloudFullDS;
-          cloudBuf.push_back(*laserCloudFullDS);
-          map_init =true;
-     }
-	else{
-		laserCloudFullMap += *laserCloudFullDS;
-          cloudBuf.push_back(*laserCloudFullDS);
-          if (cloudBuf.size()>20){
-            cloudBuf.pop_front(); //catch up
+		if (!map_init){	
+		     laserCloudFullMap = *laserCloudFullDS;
+		     cloudBuf.push_back(*laserCloudFullDS);
+		     map_init =true;
 		}
-	}
+		else{
+			laserCloudFullMap += *laserCloudFullDS;
+		     cloudBuf.push_back(*laserCloudFullDS);
+		     if (cloudBuf.size()>20){
+		       cloudBuf.pop_front(); //catch up
+			}
+		}
      // keep a buffer of the map  - can be optimized
      // pop the bufffer it exceeds length  
      
@@ -1123,7 +1277,7 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
 	laserCloudFullRes3.header.frame_id = "/worldGPS";
      pubLaserCloudFullRes.publish(laserCloudFullRes3);
      
-      if(use_lz_seg && frameCount % 3 == 0){
+     if(use_lz_seg && frameCount % 20 == 0){  // originally 3
           //combine the scans in buffer
           pcl::PointCloud<pcl::PointXYZI>::Ptr cloudPTR(new pcl::PointCloud<pcl::PointXYZI>);
           for (int i=0; i < cloudBuf.size(); i++) {
@@ -1135,57 +1289,102 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
           cloudRGB =  classicalSegmentCloud(cloudPTR);
           cout << "Segmented map size : " << cloudRGB->points.size() << "| Frame: " << frameCount << endl ; 
 
-
-		//append the map - TODO: for efficiency use a channel of the same published map
-          
-          sensor_msgs::PointCloud2 surrooundCloudMsg;
+          //publish 
+          /*sensor_msgs::PointCloud2 surrooundCloudMsg;
 		pcl::toROSMsg(*cloudRGB, surrooundCloudMsg);
 		surrooundCloudMsg.header.stamp = ros::Time().fromSec(synced_time);
 		surrooundCloudMsg.header.frame_id = "/worldGPS";
-     	pubLaserCloudMapSurround.publish(surrooundCloudMsg);}
-          //publish    
+     	pubLaserCloudMapSurround.publish(surrooundCloudMsg);}*/
+           
+
+		//append the map - TODO: for efficiency use a channel of the same published map
+          // downsample the surround map
+          pcl::PointCloud<pcl::PointXYZRGB>::Ptr laserCloudFullLZDS(new pcl::PointCloud<pcl::PointXYZRGB>());
+          downSizeFilterFullLZ.setInputCloud(cloudRGB);
+		downSizeFilterFullLZ.filter(*laserCloudFullLZDS);
+          
+		// add to the full map -- un comment to store
+		/*if (!map_lzinit){	
+          	laserCloudFullMapLZ = *laserCloudFullLZDS;
+          	map_lzinit =true;
+     	}
+		else{
+			laserCloudFullMapLZ += *laserCloudFullLZDS; 
+		}*/
+          
+          // publish the full map -- this hangs the system save once done instead
+		//sensor_msgs::PointCloud2 LZCloudMsg;
+		//pcl::toROSMsg(laserCloudFullMapLZ, LZCloudMsg);
+		//LZCloudMsg.header.stamp = ros::Time().fromSec(synced_time);
+		//LZCloudMsg.header.frame_id = "/worldGPS";
+     	//pubLaserCloudMapLZ.publish(LZCloudMsg);
+          
+
+          // once done save pcd (use a counter)
+          /*if(frameCount == 520){   // dataset 1 : 520 ;dataset 6: 800
+			pcl::io::savePCDFileBinary("/storage_ssd/lz1DS_pcd.pcd", laserCloudFullMapLZ);
+  			std::cout << "Saved " << laserCloudFullMapLZ.size () << " data points to test_pcd.pcd." << std::endl;			
+		} */ 
+            
      }
 
 
 	//8. publish map
-     if (frameCount % 10 == 0)
-		{		sensor_msgs::PointCloud2 laserCloudMsg;
-				pcl::toROSMsg(laserCloudFullMap, laserCloudMsg);
-				laserCloudMsg.header.stamp = ros::Time().fromSec(synced_time);
-				laserCloudMsg.header.frame_id = "/worldGPS";
-     			pubLaserCloudMap.publish(laserCloudMsg);
-               	cout << "Published map size : " << laserCloudFullMap.points.size() << "| Frame: " << frameCount << endl ;
-				//publish aft mapped path
-                    
+     if (frameCount % 10 == 0){		
+       	sensor_msgs::PointCloud2 laserCloudMsg;
+		pcl::toROSMsg(laserCloudFullMap, laserCloudMsg);
+		laserCloudMsg.header.stamp = ros::Time().fromSec(synced_time);
+		laserCloudMsg.header.frame_id = "/worldGPS";
+     	pubLaserCloudMap.publish(laserCloudMsg);
+     	cout << "Published map size : " << laserCloudFullMap.points.size() << "| Frame: " << frameCount << endl ;
+		//publish aft mapped path             
                     
 		  
 
 
-	//9. Publish path
-     nav_msgs::Odometry odomAftMapped;
-     odomAftMapped.header.frame_id = "/worldGPS";
-     odomAftMapped.child_frame_id = "/aft_mapped";
-	odomAftMapped.header.stamp = ros::Time().fromSec(synced_time);
-	odomAftMapped.pose.pose.orientation.x = q_w_curr.x();
-	odomAftMapped.pose.pose.orientation.y = q_w_curr.y();
-	odomAftMapped.pose.pose.orientation.z = q_w_curr.z();
-	odomAftMapped.pose.pose.orientation.w = q_w_curr.w();
-	odomAftMapped.pose.pose.position.x = t_w_curr.x();
-	odomAftMapped.pose.pose.position.y = t_w_curr.y();
-	odomAftMapped.pose.pose.position.z = t_w_curr.z();
-	pubOdomAftMapped.publish(odomAftMapped);
+		//9. Publish path
+		nav_msgs::Odometry odomAftMapped;
+		odomAftMapped.header.frame_id = "/worldGPS";
+		odomAftMapped.child_frame_id = "/aft_mapped";
+		odomAftMapped.header.stamp = ros::Time().fromSec(synced_time);
+		odomAftMapped.pose.pose.orientation.x = q_w_curr.x();
+		odomAftMapped.pose.pose.orientation.y = q_w_curr.y();
+		odomAftMapped.pose.pose.orientation.z = q_w_curr.z();
+		odomAftMapped.pose.pose.orientation.w = q_w_curr.w();
+		odomAftMapped.pose.pose.position.x = t_w_curr.x();
+		odomAftMapped.pose.pose.position.y = t_w_curr.y();
+		odomAftMapped.pose.pose.position.z = t_w_curr.z();
+		pubOdomAftMapped.publish(odomAftMapped);
 
-	geometry_msgs::PoseStamped laserAfterMappedPose;
-	laserAfterMappedPose.header = odomAftMapped.header;
-	laserAfterMappedPose.pose = odomAftMapped.pose.pose;
-	laserAfterMappedPath.header.stamp = odomAftMapped.header.stamp;
-	laserAfterMappedPath.header.frame_id = "/worldGPS";
-	laserAfterMappedPath.poses.push_back(laserAfterMappedPose);
-	pubLaserAfterMappedPath.publish(laserAfterMappedPath);
+		geometry_msgs::PoseStamped laserAfterMappedPose;
+		laserAfterMappedPose.header = odomAftMapped.header;
+		laserAfterMappedPose.pose = odomAftMapped.pose.pose;
+		laserAfterMappedPath.header.stamp = odomAftMapped.header.stamp;
+		laserAfterMappedPath.header.frame_id = "/worldGPS";
+		laserAfterMappedPath.poses.push_back(laserAfterMappedPose);
+		pubLaserAfterMappedPath.publish(laserAfterMappedPath);
 
-            
-        
+     
 
+		// test accesssing the thread - ok
+          // Publish surroun map - disable LZ
+		globalEstimator.mPoseMap.lock();
+		laserCloudSurround->clear();
+		for (int i = 0; i < globalEstimator.laserCloudValidNum; i++)
+		{
+			int ind = globalEstimator.laserCloudSurroundInd[i];
+			*laserCloudSurround += *globalEstimator.laserCloudCornerArray[ind];
+			*laserCloudSurround += *globalEstimator.laserCloudSurfArray[ind];
+		}
+		cout << "Surround publish map size :" << laserCloudSurround->size() << endl;
+		//int temp = globalEstimator.laserCloudValidNum;
+		//cout << "Valid laser scans :" << temp << "|  with size of last : " << globalEstimator.laserCloudCornerArray[globalEstimator.laserCloudValidInd[temp-1]]->size()  << endl;
+		globalEstimator.mPoseMap.unlock();     
+		sensor_msgs::PointCloud2 laserCloudMsgSurr;
+		pcl::toROSMsg(*laserCloudSurround, laserCloudMsgSurr);
+		laserCloudMsgSurr.header.stamp = ros::Time().fromSec(synced_time);
+		laserCloudMsgSurr.header.frame_id = "/worldGPS";
+		pubLaserCloudMapSurround.publish(laserCloudMsgSurr);
 
 	}
 
@@ -1223,8 +1422,7 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloud
     }*/
      // and clear the que 
      
-
-
+	}//sync found
 }
 
 
@@ -1251,7 +1449,39 @@ int main(int argc, char **argv)
     string config_file = argv[1];
     printf("config_file: %s\n", argv[1]);
 
-    readParameters(config_file);}
+    readParameters(config_file);
+    
+    // set the calibration parameters
+    Eigen::Matrix4d Tmat_IC;
+    Tmat_IC.setIdentity();   // Set to Identity to make bottom row of Matrix 0,0,0,1
+    Tmat_IC.block<3,3>(0,0) = RIC[0];
+    Tmat_IC.block<3,1>(0,3) = TIC[0];
+
+    Eigen::Matrix4d Tmat_CL;
+    Tmat_CL.setIdentity();   // Set to Identity to make bottom row of Matrix 0,0,0,1
+    Tmat_CL.block<3,3>(0,0) = RCL[0];
+    Tmat_CL.block<3,1>(0,3) = TCL[0];
+	   
+    Eigen::Affine3f transadjust = pcl::getTransformation(L_C_tx, L_C_ty, L_C_tz, L_C_rx, L_C_ry, L_C_rz);
+    Eigen::Matrix4f Tmat_LLadjf = transadjust.matrix();
+    Eigen::Matrix4d Tmat_LLadj = Tmat_LLadjf.cast<double>();
+   
+    Eigen::Matrix4d Tmat_IL = Tmat_IC * Tmat_CL;
+    Eigen::Matrix4d Tmat_ILadj = Tmat_IL * Tmat_LLadj;
+	    
+    // these will be used by the optimizer as the extrinsics
+    Eigen::Vector3d t_IL = Tmat_ILadj.block<3,1>(0,3); 
+    Eigen::Matrix3d Rmat_ILadj = Tmat_ILadj.block<3,3>(0,0);
+    Eigen::Quaterniond q_IL(Rmat_ILadj);
+
+    globalEstimator.t_I_L = t_IL;
+    globalEstimator.q_I_L = q_IL;
+    
+    cout << "Lidar Extrinsic check: " << globalEstimator.t_I_L << "|" << globalEstimator.q_I_L.vec() << endl;
+    //Calculate Lidar extrinsics from parameters     
+    //q_I_L = q_I_C * q_C_L;
+    //t_I_L = t_I_C + q_I_C * t_C_L;
+    }
     cloudRGB.reset(new pcl::PointCloud<pcl::PointXYZRGB>());
     
 
@@ -1275,12 +1505,22 @@ int main(int argc, char **argv)
     pub_frl_path = n.advertise<nav_msgs::Path>("frl_path", 100);
     //if(use_lidar){
     		ros::Subscriber subLaserCloudFullRes = n.subscribe("/velodyne_cloud_3", 100, laserCloudFullResHandler);
+          
+          // this can be synced by the odom node -> deskewed by the odom node
+          //ros::Subscriber subLaserCloudCornerLast = n.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_corner_last", 100, laserCloudCornerLastHandler);
+          ros::Subscriber subLaserCloudCornerLast = n.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_less_sharp", 100, laserCloudCornerLastHandler);
+          //ros::Subscriber subLaserCloudSurfLast = n.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_surf_last", 100, laserCloudSurfLastHandler);
+          ros::Subscriber subLaserCloudSurfLast = n.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_less_flat", 100, laserCloudSurfLastHandler);
+          
+               
     		pubLaserCloudFullRes = n.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_registered", 100);
     		pubLaserCloudMap = n.advertise<sensor_msgs::PointCloud2>("/laser_cloud_map", 100);
+          pubLaserCloudMapLZ = n.advertise<sensor_msgs::PointCloud2>("/laser_cloud_map_lz", 100);
           pubLaserCloudMapSurround = n.advertise<sensor_msgs::PointCloud2>("/laser_cloud_map_surround", 100);
           pubLaserAfterMappedPath = n.advertise<nav_msgs::Path>("/aft_mapped_path", 100);
           pubOdomAftMapped = n.advertise<nav_msgs::Odometry>("/aft_mapped_to_init", 100);
 		downSizeFilterFull.setLeafSize(0.1, 0.1,0.1);
+          downSizeFilterFullLZ.setLeafSize(0.5, 0.5,0.5); // was 0.1m before
 	//}
     pub_global_odometry = n.advertise<nav_msgs::Odometry>("global_odometry", 100);
     pub_car = n.advertise<visualization_msgs::MarkerArray>("car_model", 100);

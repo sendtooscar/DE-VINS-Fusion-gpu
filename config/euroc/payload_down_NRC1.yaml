@@ -44,6 +44,16 @@ cam0_T_lidar: !!opencv-matrix
            0.9926, -0.1200,  0.0171, -0.00039529,
                 0,       0,       0,      1 ]
 
+#cam0_T_lidar: !!opencv-matrix      # <- ravindu new calib DEC 2022  - not working
+#   rows: 4
+#   cols: 4
+#   dt: d
+#   data: [0.19674,   0.9797, -0.03835, -0.05639, 
+#          0.01676,  0.03575,  0.99921,  0.39494, 
+#          0.98031, -0.19723, -0.00939, -0.03139,
+#                0,        0,        0,        1 ]
+
+
 
 # lidar to camera extrinsic adjustment -  this is the fine tuning for the Lidar expose using dynamic reconfigure to adjust
 lidar_to_cam_tx: 0
@@ -51,7 +61,7 @@ lidar_to_cam_ty: 0
 lidar_to_cam_tz: 0
 lidar_to_cam_rx: 0
 lidar_to_cam_ry: 0
-lidar_to_cam_rz: 3.11   #+ve yaw  # fixing the lidar error
+lidar_to_cam_rz: 3.11   #+ve yaw  # fixing the lidar error <- ravindu new calib DEC 2022 - not wpking removed
 
 
 #Multiple thread support
