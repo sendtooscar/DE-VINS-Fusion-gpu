@@ -9,7 +9,7 @@ imu_topic: "/imu/data"
 image0_topic: "/camera/image_mono"
 output_path: "~/output/"
 
-cam0_calib: "payload_cam_down_NRC1.yaml"
+cam0_calib: "test_payload_cam_down.yaml"
 image_width: 1440
 image_height: 1080
 
@@ -20,7 +20,6 @@ point_cloud_topic: "/velodyne_points" #/scan default
 use_dense_cloud: 1  # if 0 uses the current scan only for depth enhancement
 lidar_skip: 3
    
-
 # Extrinsic parameter between IMU and Camera.
 estimate_extrinsic: 0   # 0  Have an accurate extrinsic parameters. We will trust the following imu^R_cam, imu^T_cam, don't change it.
                         # 1  Have an initial guess about extrinsic parameters. We will optimize around your initial guess.
@@ -29,9 +28,9 @@ body_T_cam0: !!opencv-matrix
    rows: 4
    cols: 4
    dt: d
-   data: [-0.01039363,   0.99994595,  0.00027614, -0.27939175,
-           -0.99982944, -0.0103882,  -0.01527021, 0.00394073,
-           -0.01526652,  -0.00043481, 0.99988337, -0.00039529,
+   data: [ 0.00235643,  0.99997843, -0.00613037, -0.25805624,
+          -0.99960218,  0.00218315, -0.02811962, -0.01138283,
+          -0.02810563,  0.0061942,   0.99958577,  0.09243762,
            0, 0, 0, 1]
 
 #Tmatrix from lidar frame to camera frame, cam^T_lidar
@@ -48,11 +47,33 @@ cam0_T_lidar: !!opencv-matrix      # <- ravindu new calib DEC 2022
    rows: 4
    cols: 4
    dt: d
-   data: [-0.09297,   -0.99565,  0.005478, -0.0566, 
-          -0.07697,    0.01267,  0.99695,   0.3819, 
-          -0.99268,    0.09226, -0.07782,  -0.0454,
+   data: [-0.030011,  0.999548,   0.001302, -0.0566, 
+           0.007985, -0.0010637,  0.999967,  0.3829, 
+           0.999517,  0.0300209, -0.0079502,-0.0374,
                  0,          0,        0,        1 ]
 
+
+# Extrinsic parameter between IMU and Camera.
+#estimate_extrinsic: 0   # 0  Have an accurate extrinsic parameters. We will trust the following imu^R_cam, imu^T_cam, don't change it.
+                        # 1  Have an initial guess about extrinsic parameters. We will optimize around your initial guess.
+
+#body_T_cam0: !!opencv-matrix
+#   rows: 4
+#   cols: 4
+#   dt: d
+#   data: [0.00235643,  0.99997843, -0.00613037, -0.25805624,
+#         -0.99960218,  0.00218315, -0.02811962, -0.01138283,
+#         -0.02810563,  0.0061942,   0.99958577,  0.09243762,
+#           0, 0, 0, 1]
+
+#cam0_T_lidar: !!opencv-matrix      # <- ravindu new calib DEC 2022
+#   rows: 4
+#   cols: 4
+#   dt: d
+#   data: [-0.03001147035932111,   0.9995487050966516,   0.001302991357944927, -0.0566, 
+#		 0.007985770493050659, -0.00106376442951861,  0.9999675474108503,    0.3829, 
+#		 0.9995176532290482,    0.03002090179934275, -0.007950241420881965, -0.0374,
+#           0,          		    0,        			 0,        		    1 ]
 
 
 # lidar to camera extrinsic adjustment -  this is the fine tuning for the Lidar expose using dynamic reconfigure to adjust
@@ -62,7 +83,6 @@ lidar_to_cam_tz: 0
 lidar_to_cam_rx: 0
 lidar_to_cam_ry: 0
 lidar_to_cam_rz: 0 #3.11   #+ve yaw  # fixing the lidar error <- ravindu new calib DEC 2022
-
 
 #Multiple thread support
 multiple_thread: 1
@@ -92,8 +112,7 @@ g_norm: 9.803     # gravity magnitude
 
 #unsynchronization parameters
 estimate_td: 0                      # online estimate time offset between camera and imu
-td: -0.0297405129318                        # initial value of time offset. unit s. readed image clock + td = real image clock (IMU clock)
-# -0.02932 for the un sync data...., +0.006 for synced data (i.e., 6ms capture delay from hardware trigger)
+td: -0.0278247886862                       # initial value of time offset. unit: s. readed image clock + td = real image clock (IMU clock)
 
 #loop closure parameters
 load_previous_pose_graph: 0        # load and reuse previous pose graph; load from 'pose_graph_save_path'

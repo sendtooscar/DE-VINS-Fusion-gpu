@@ -45,6 +45,7 @@ public:
 	GlobalOptimization();
 	~GlobalOptimization();
 	void inputGPS(double t, double latitude, double longitude, double altitude, double posAccuracy);
+     void inputGPSviz(double t, double latitude, double longitude, double altitude, double posAccuracy);
      void inputGPSPR(double t, double latitude, double longitude, double altitude, double posAccuracy);
      void inputPPKviz(double t, double latitude, double longitude, double altitude, double posAccuracy);
      void inputFRLviz(double t, double latitude, double longitude, double altitude, double w, double x, double y, double z);
@@ -55,6 +56,7 @@ public:
      void inputRot(double t, double q_w, double q_x, double q_y, double q_z, double rotAccuracy);
      void inputMag(double t, double mag_x, double mag_y, double mag_z, double magAccuracy);
      void inputSurfnCorners(double t,pcl::PointCloud<PointType>::Ptr& laserCloudCornerLast ,pcl::PointCloud<PointType>::Ptr& laserCloudSurfLast);
+     bool isbusy(); 
      //void inputCloudFullRes(double t,pcl::PointCloud<PointType>::Ptr& laserCloudFullRes);
 	nav_msgs::Path global_path;
      nav_msgs::Path gps_path; 
@@ -120,8 +122,11 @@ public:
 	Eigen::Quaterniond q_w_curr;
 	Eigen::Vector3d t_w_curr;
 
-     Eigen::Quaterniond q_I_L;
+    Eigen::Quaterniond q_I_L;
 	Eigen::Vector3d t_I_L;
+
+	Eigen::Quaterniond q_Iflat_I;
+	Eigen::Quaterniond q_enu_map;
 
      //downsample filters
 	pcl::VoxelGrid<PointType> downSizeFilterCorner;
@@ -144,9 +149,11 @@ private:
      map<double, vector<double>> globalRotMap;
 	map<double, vector<double>> GPSPositionMap;
      map<double, vector<double>> GPSPRPositionMap;
-     map<double, vector<double>> PPKPositionMap;
-     map<double, vector<double>> FRLPoseMap;
+     map<double, vector<double>> GPSPositionMapViz; //for visualization
+     map<double, vector<double>> PPKPositionMap; //for visualization
+     map<double, vector<double>> FRLPoseMap; //for visualization
      map<double, vector<double>> magMap;
+     bool initMap;
 	bool initGPS;
 	bool newGPS;
 	bool newGPSPR;

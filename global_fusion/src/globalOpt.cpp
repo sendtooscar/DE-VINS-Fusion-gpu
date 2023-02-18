@@ -1,1400 +1,1696 @@
-/*******************************************************
- * Copyright (C) 2019, Aerial Robotics Group, Hong Kong University of Science and Technology
- * 
- * This file is part of VINS.
- * 
- * Licensed under the GNU General Public License v3.0;
- * you may not use this file except in compliance with the License.
- *
- * Author: Qin Tong (qintonguav@gmail.com)
- *******************************************************/
+    /*******************************************************
+     * Copyright (C) 2019, Aerial Robotics Group, Hong Kong University of Science and Technology
+     * 
+     * This file is part of VINS.
+     * 
+     * Licensed under the GNU General Public License v3.0;
+     * you may not use this file except in compliance with the License.
+     *
+     * Author: Qin Tong (qintonguav@gmail.com)
+     *******************************************************/
 
-#include "globalOpt.h"
-#include "Factors.h"
-#include <tf2_ros/static_transform_broadcaster.h>
-#include <tf2_ros/transform_broadcaster.h>
-# define PI  3.141592653589793238462643383279502884L /* pi */
+    #include "globalOpt.h"
+    #include "Factors.h"
+    #include <tf2_ros/static_transform_broadcaster.h>
+    #include <tf2_ros/transform_broadcaster.h>
+    # define PI  3.141592653589793238462643383279502884L /* pi */
 
-//R------------------------------R//
-bool writeToFile = false; //save text files for evaluation
-int updateGlobalPathCount = 0;
-int optcounter = 0;
-int ppkPosCounter = 0;
-int vinsPosCounter = 0;
-double last_GPS=0;
-//R------------------------------R//
+    //R------------------------------R//
+    bool writeToFile = false; //save text files for evaluation
+    int updateGlobalPathCount = 0;
+    int optcounter = 0;
+    int ppkPosCounter = 0;
+    int vinsPosCounter = 0;
+    double last_GPS=0;
 
-GlobalOptimization::GlobalOptimization():
-outfileOdom("resultsOdom.txt", std::ios_base::trunc),
-outfileGt("resultsGt.txt", std::ios_base::trunc),
-outfileVINS("VINS_bell412_dataset1.txt", std::ios_base::trunc),
-outfileGPS("PPK_bell412_dataset1.txt", std::ios_base::trunc),
-outfileFusion("Fusion_bell412_dataset1.txt", std::ios_base::trunc),
-laserCloudCornerLast(new pcl::PointCloud<PointType>()),
-laserCloudSurfLast(new pcl::PointCloud<PointType>()),
-laserCloudSurround(new pcl::PointCloud<PointType>()),
-laserCloudCornerFromMap(new pcl::PointCloud<PointType>()),
-laserCloudSurfFromMap(new pcl::PointCloud<PointType>()),
-laserCloudFullRes(new pcl::PointCloud<PointType>()),
-laserCloudCornerStack(new pcl::PointCloud<PointType>()),
-laserCloudSurfStack(new pcl::PointCloud<PointType>()),
-kdtreeCornerFromMap(new pcl::KdTreeFLANN<PointType>()),
-kdtreeSurfFromMap(new pcl::KdTreeFLANN<PointType>())
-//timeLaserCloudFullResLast(0.0),
-//timeLaserCloudFullRes(0.0),
-//laserCloudFullRes2(new pcl::PointCloud<PointType>())
-{
-    initGPS = false;
-    newGPS = false;
-    newGPSPR = false;
-    newCloudFullRes = false;
-    newCloud = false;
-    WGPS_T_WVIO = Eigen::Matrix4d::Identity();
-    WGPS_T_WVIO_viz = Eigen::Matrix4d::Identity();
-    update_count =0;
-    GTframeCount = 0;
-    threadOpt = std::thread(&GlobalOptimization::optimize, this);
-    last_update_time =0.0;
+    double map_theta = 30/180*PI; // this is the global orientation which gets optimized for global alignment
+    //R------------------------------R//
 
-
-    float lineRes = 0.4;
-    float planeRes = 0.8;
-    printf("line resolution %f plane resolution %f \n", lineRes, planeRes);
-    downSizeFilterCorner.setLeafSize(lineRes, lineRes,lineRes);
-    downSizeFilterSurf.setLeafSize(planeRes, planeRes, planeRes);
-
-    for (int i = 0; i < laserCloudNum; i++)
+    GlobalOptimization::GlobalOptimization():
+    outfileOdom("resultsOdom.txt", std::ios_base::trunc),
+    outfileGt("resultsGt.txt", std::ios_base::trunc),
+    outfileVINS("VINS_bell412_dataset1.txt", std::ios_base::trunc),
+    outfileGPS("PPK_bell412_dataset1.txt", std::ios_base::trunc),
+    outfileFusion("Fusion_bell412_dataset1.txt", std::ios_base::trunc),
+    laserCloudCornerLast(new pcl::PointCloud<PointType>()),
+    laserCloudSurfLast(new pcl::PointCloud<PointType>()),
+    laserCloudSurround(new pcl::PointCloud<PointType>()),
+    laserCloudCornerFromMap(new pcl::PointCloud<PointType>()),
+    laserCloudSurfFromMap(new pcl::PointCloud<PointType>()),
+    laserCloudFullRes(new pcl::PointCloud<PointType>()),
+    laserCloudCornerStack(new pcl::PointCloud<PointType>()),
+    laserCloudSurfStack(new pcl::PointCloud<PointType>()),
+    kdtreeCornerFromMap(new pcl::KdTreeFLANN<PointType>()),
+    kdtreeSurfFromMap(new pcl::KdTreeFLANN<PointType>())
+    //timeLaserCloudFullResLast(0.0),
+    //timeLaserCloudFullRes(0.0),
+    //laserCloudFullRes2(new pcl::PointCloud<PointType>())
     {
-		laserCloudCornerArray[i].reset(new pcl::PointCloud<PointType>());
-		laserCloudSurfArray[i].reset(new pcl::PointCloud<PointType>());
+        initGPS = false;
+        initMap = false;
+        newGPS = false;
+        newGPSPR = false;
+        newCloudFullRes = false;
+        newCloud = false;
+        WGPS_T_WVIO = Eigen::Matrix4d::Identity();
+        WGPS_T_WVIO_viz = Eigen::Matrix4d::Identity();
+        update_count =0;
+        GTframeCount = 0;
+        threadOpt = std::thread(&GlobalOptimization::optimize, this);
+        last_update_time =0.0;
+
+        q_Iflat_I = Eigen::Quaterniond(1,0,0,0);
+        q_enu_map = Eigen::AngleAxisd(51.35/180.0*M_PI, Eigen::Vector3d::UnitZ()); // for light house - needed ony for loam-gps
+        float lineRes = 0.2;
+        float planeRes = 0.4;     // this is whats used in ALOAM todo: get this from parameters
+        printf("line resolution %f plane resolution %f \n", lineRes, planeRes);
+        downSizeFilterCorner.setLeafSize(lineRes, lineRes,lineRes);
+        downSizeFilterSurf.setLeafSize(planeRes, planeRes, planeRes);
+
+        for (int i = 0; i < laserCloudNum; i++)
+        {
+          laserCloudCornerArray[i].reset(new pcl::PointCloud<PointType>());
+          laserCloudSurfArray[i].reset(new pcl::PointCloud<PointType>());
+      }
+
+
+
+    } 
+
+    GlobalOptimization::~GlobalOptimization()
+    {
+        threadOpt.detach();
+    }
+
+    bool GlobalOptimization::isbusy(){
+       bool busy_flag;
+       mPoseMap.lock();
+       busy_flag=newCloud;
+       mPoseMap.unlock();
+       return busy_flag;
     }
 
 
-    
-} 
-
-GlobalOptimization::~GlobalOptimization()
-{
-    threadOpt.detach();
-}
-
-void GlobalOptimization::GPS2XYZ(double latitude, double longitude, double altitude, double* xyz)
-{
-    if(!initGPS)
+    void GlobalOptimization::GPS2XYZ(double latitude, double longitude, double altitude, double* xyz)
     {
-        geoConverter.Reset(latitude, longitude, altitude);
-        initGPS = true;
+        if(!initGPS)
+        {
+            geoConverter.Reset(latitude, longitude, altitude);
+            initGPS = true;
+        }
+        geoConverter.Forward(latitude, longitude, altitude, xyz[0], xyz[1], xyz[2]);
+        //printf("la: %f lo: %f al: %f\n", latitude, longitude, altitude);
+        //printf("gps x: %f y: %f z: %f\n", xyz[0], xyz[1], xyz[2]);
     }
-    geoConverter.Forward(latitude, longitude, altitude, xyz[0], xyz[1], xyz[2]);
-    //printf("la: %f lo: %f al: %f\n", latitude, longitude, altitude);
-    //printf("gps x: %f y: %f z: %f\n", xyz[0], xyz[1], xyz[2]);
-}
 
-void GlobalOptimization::pointAssociateToMap(PointType const *const pi, PointType *const po)
-{
+    void GlobalOptimization::pointAssociateToMap(PointType const *const pi, PointType *const po)
+    {
 
-     // modified to include the Lidar extrinsics
-	Eigen::Vector3d point_L(pi->x, pi->y, pi->z);
+         // modified to include the Lidar extrinsics
+    	Eigen::Vector3d point_L(pi->x, pi->y, pi->z);
 
-     Eigen::Vector3d point_curr = q_I_L *point_L + t_I_L;
-	Eigen::Vector3d point_w = q_w_curr * point_curr + t_w_curr;
-	po->x = point_w.x();
-	po->y = point_w.y();
-	po->z = point_w.z();
-	po->intensity = pi->intensity;
-	//po->intensity = 1.0;
-}
+         Eigen::Vector3d point_curr =  q_I_L *point_L + t_I_L ; // for debugging
+     //Eigen::Vector3d point_curr = point_L ;
+     Eigen::Vector3d point_w = q_w_curr * point_curr + t_w_curr;
+     po->x = point_w.x();
+     po->y = point_w.y();
+     po->z = point_w.z();
+     po->intensity = pi->intensity;
+    	//po->intensity = 1.0;
+    }
 
-// NEW: cloud handling
-/*void GlobalOptimization::inputCloudFullRes(double t,pcl::PointCloud<PointType>::Ptr& laserCloudFullResIn){
-      timeLaserCloudFullRes=t;
-      //laserCloudFullRes->clear();
-      //*laserCloudFullRes = *laserCloudFullResIn;
-      //pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
-      *laserCloudFullRes2 = *laserCloudFullResIn;
-      //laserCloudFullRes->clear();
-	 //pcl::fromROSMsg(*laserCloudFullResIn, *laserCloudFullRes);
-      if (timeLaserCloudFullRes > timeLaserCloudFullResLast){
-	 	newCloudFullRes = true;
-	 }
-}*/
+    // NEW: cloud handling
+    /*void GlobalOptimization::inputCloudFullRes(double t,pcl::PointCloud<PointType>::Ptr& laserCloudFullResIn){
+          timeLaserCloudFullRes=t;
+          //laserCloudFullRes->clear();
+          //*laserCloudFullRes = *laserCloudFullResIn;
+          //pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
+          *laserCloudFullRes2 = *laserCloudFullResIn;
+          //laserCloudFullRes->clear();
+    	 //pcl::fromROSMsg(*laserCloudFullResIn, *laserCloudFullRes);
+          if (timeLaserCloudFullRes > timeLaserCloudFullResLast){
+    	 	newCloudFullRes = true;
+    	 }
+    }*/
 
-void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quaterniond OdomQ)
-{
-	mPoseMap.lock();
-    vector<double> localPose{OdomP.x(), OdomP.y(), OdomP.z(), 
-    					     OdomQ.w(), OdomQ.x(), OdomQ.y(), OdomQ.z()};
-    localPoseMap[t] = localPose;
+    void GlobalOptimization::inputOdom(double t, Eigen::Vector3d OdomP, Eigen::Quaterniond OdomQ)
+    {
+    	mPoseMap.lock();
+        vector<double> localPose{OdomP.x(), OdomP.y(), OdomP.z(), 
+        OdomQ.w(), OdomQ.x(), OdomQ.y(), OdomQ.z()};
+        localPoseMap[t] = localPose;
 
-	//R--------------------------R//
-	if(writeToFile)
-	{
-		//write file - VINS
-    		Eigen::Matrix3d odomR = OdomQ.normalized().toRotationMatrix();
-    		std::ofstream foutE("VINS_bell412_dataset1.txt", std::ios::app); 
-    		vinsPosCounter++;
-    		foutE.setf(std::ios::fixed, std::ios::floatfield);
-    		foutE.precision(0);
-    		foutE << vinsPosCounter << " ";
-    		foutE.precision(9);
-    		foutE << t  << " "
-           << odomR(0,0) << " "
-           << odomR(0,1) << " "
-           << odomR(0,2) << " "
-            << OdomP.x()  << " "
-            << odomR(1,0) << " "
-            << odomR(1,1) << " "
-            << odomR(1,2) << " "
-            << OdomP.y()  << " "
-            << odomR(2,0) << " "
-            << odomR(2,1) << " "
-            << odomR(2,2) << " "
-            << OdomP.z()  << std::endl;	
-	}
-	//R--------------------------R//
+    	//R--------------------------R//
+        if(writeToFile)
+        {
+    		//write file - VINS
+          Eigen::Matrix3d odomR = OdomQ.normalized().toRotationMatrix();
+          std::ofstream foutE("VINS_bell412_dataset1.txt", std::ios::app); 
+          vinsPosCounter++;
+          foutE.setf(std::ios::fixed, std::ios::floatfield);
+          foutE.precision(0);
+          foutE << vinsPosCounter << " ";
+          foutE.precision(9);
+          foutE << t  << " "
+          << odomR(0,0) << " "
+          << odomR(0,1) << " "
+          << odomR(0,2) << " "
+          << OdomP.x()  << " "
+          << odomR(1,0) << " "
+          << odomR(1,1) << " "
+          << odomR(1,2) << " "
+          << OdomP.y()  << " "
+          << odomR(2,0) << " "
+          << odomR(2,1) << " "
+          << odomR(2,2) << " "
+          << OdomP.z()  << std::endl;	
+      }
+    	//R--------------------------R//
 
 
-    Eigen::Quaterniond globalQ;
-    globalQ = WGPS_T_WVIO.block<3, 3>(0, 0) * OdomQ;
-    Eigen::Vector3d globalP = WGPS_T_WVIO.block<3, 3>(0, 0) * OdomP + WGPS_T_WVIO.block<3, 1>(0, 3);
-    vector<double> globalPose{globalP.x(), globalP.y(), globalP.z(),
-                              globalQ.w(), globalQ.x(), globalQ.y(), globalQ.z()};
-    globalPoseMap[t] = globalPose;
-    lastP = globalP;
-    lastQ = globalQ;
+      Eigen::Quaterniond globalQ;
+      globalQ = WGPS_T_WVIO.block<3, 3>(0, 0) * OdomQ;
+      Eigen::Vector3d globalP = WGPS_T_WVIO.block<3, 3>(0, 0) * OdomP + WGPS_T_WVIO.block<3, 1>(0, 3);
+      vector<double> globalPose{globalP.x(), globalP.y(), globalP.z(),
+      globalQ.w(), globalQ.x(), globalQ.y(), globalQ.z()};
+      globalPoseMap[t] = globalPose;
+      lastP = globalP;
+      lastQ = globalQ;
 
-    geometry_msgs::PoseStamped pose_stamped;
-    pose_stamped.header.stamp = ros::Time(t);
-    pose_stamped.header.frame_id = "worldGPS";
-    pose_stamped.pose.position.x = lastP.x();
-    pose_stamped.pose.position.y = lastP.y();
-    pose_stamped.pose.position.z = lastP.z();
-    pose_stamped.pose.orientation.x = lastQ.x();
-    pose_stamped.pose.orientation.y = lastQ.y();
-    pose_stamped.pose.orientation.z = lastQ.z();
-    pose_stamped.pose.orientation.w = lastQ.w();
-    global_path.header = pose_stamped.header;
-    global_path.poses.push_back(pose_stamped);
-    gps_path.header = pose_stamped.header; 
-    ppk_path.header = pose_stamped.header;
-    frl_path.header = pose_stamped.header;
+      geometry_msgs::PoseStamped pose_stamped;
+      pose_stamped.header.stamp = ros::Time(t);
+      pose_stamped.header.frame_id = "worldGPS";
+      pose_stamped.pose.position.x = lastP.x();
+      pose_stamped.pose.position.y = lastP.y();
+      pose_stamped.pose.position.z = lastP.z();
+      pose_stamped.pose.orientation.x = lastQ.x();
+      pose_stamped.pose.orientation.y = lastQ.y();
+      pose_stamped.pose.orientation.z = lastQ.z();
+      pose_stamped.pose.orientation.w = lastQ.w();
+      global_path.header = pose_stamped.header;
+      global_path.poses.push_back(pose_stamped);
 
 
-    //Publish the worldGPS frame (only perform 100 updates and stop)
-    /*if (update_count <100){
-        WGPS_T_WVIO_viz = WGPS_T_WVIO; 
-    	update_count++;
-        if (update_count ==100){
-          printf("*********************WGPS_T_WVIO_viz fixed*********************\n");
-        }     
-     }*/
+      ppk_path.header = pose_stamped.header;
+      frl_path.header = pose_stamped.header;
 
-    // manual overide of the orientation 
-    double angle = 63.8;// from mag for bell dataset 1
-    WGPS_T_WVIO_viz << cos(angle*PI/180), -sin(angle*PI/180), 0, 0,
-                       sin(angle*PI/180), cos(angle*PI/180), 0, 0,
-                       0, 0, 1, 0,
-                       0, 0, 0, 1;
-
-    //WGPS_T_WVIO_viz = WGPS_T_WVIO;
-
-    // initialize using compass
-    // wait for compass
-    // get ref mag heading
-    // get current mag heading 
-    // set the heading
-
- 
-    static tf2_ros::TransformBroadcaster brOpGPS;
-    geometry_msgs::TransformStamped transformStampedG;
-    transformStampedG.header.stamp = ros::Time(t);
-    transformStampedG.header.frame_id = "worldGPS";    //reference frame
-    transformStampedG.child_frame_id = "world";
-    transformStampedG.transform.translation.x = WGPS_T_WVIO_viz(0,3); //read & send the pos
-    transformStampedG.transform.translation.y = WGPS_T_WVIO_viz(1,3);
-    transformStampedG.transform.translation.z = WGPS_T_WVIO_viz(2,3);
-
-    Eigen::Quaterniond q_upTemp;
-    q_upTemp = Eigen::Quaterniond(WGPS_T_WVIO_viz.block<3, 3>(0, 0));
-    transformStampedG.transform.rotation.x = q_upTemp.x();
-    transformStampedG.transform.rotation.y = q_upTemp.y();
-    transformStampedG.transform.rotation.z = q_upTemp.z();
-    transformStampedG.transform.rotation.w = q_upTemp.w();
-
-    //static_broadcaster.sendTransform(static_transformStamped);
-    brOpGPS.sendTransform(transformStampedG);
+      pose_stamped.header.frame_id = "worldGPSact";
+      gps_path.header = pose_stamped.header;
 
 
-    
 
-    mPoseMap.unlock();
-}
 
-void GlobalOptimization::getGlobalOdom(Eigen::Vector3d &odomP, Eigen::Quaterniond &odomQ)
-{
-    odomP = lastP;
-    odomQ = lastQ;
-}
+        // manual overide of the orientation 
+        //double angle = 63.8;// from mag for bell dataset 1
+        //double angle = 55;// for lighthouse 
+        //WGPS_T_WVIO_viz << cos(angle*PI/180), -sin(angle*PI/180), 0, 0,
+        //                   sin(angle*PI/180), cos(angle*PI/180), 0, 0,
+        //                   0, 0, 1, 0,
+        //                  0, 0, 0, 1;   // WGPSactual_T_WGPS(VIL)
 
-void GlobalOptimization::inputGPS(double t, double latitude, double longitude, double altitude, double posAccuracy)
-{
-	double xyz[3];
-	GPS2XYZ(latitude, longitude, altitude, xyz);
-	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
+        //updated using an optimizer
+      WGPS_T_WVIO_viz << cos(map_theta), -sin(map_theta), 0, 0,
+      sin(map_theta), cos(map_theta), 0, 0,
+      0, 0, 1, 0,
+                         0, 0, 0, 1;   // WGPSactual_T_WGPS(VIL)
+
+        //WGPS_T_WVIO_viz = WGPS_T_WVIO; // this overides above
+
+        //Publish the worldGPS frame (only perform 100 updates and stop)
+        /*if (update_count <100){
+            WGPS_T_WVIO_viz = WGPS_T_WVIO; 
+        	update_count++;
+            if (update_count ==100){
+              printf("*********************WGPS_T_WVIO_viz fixed*********************\n");
+            }     
+         }*/
+
+        // initialize using compass
+        // wait for compass
+        // get ref mag heading
+        // get current mag heading 
+        // set the heading
+
+
+                         static tf2_ros::TransformBroadcaster brOpGPS;
+                         geometry_msgs::TransformStamped transformStampedG;
+                         transformStampedG.header.stamp = ros::Time(t);
+        transformStampedG.header.frame_id = "worldGPS";    //reference frame
+        transformStampedG.child_frame_id = "world";
+        transformStampedG.transform.translation.x = WGPS_T_WVIO(0,3); //read & send the pos
+        transformStampedG.transform.translation.y = WGPS_T_WVIO(1,3);
+        transformStampedG.transform.translation.z = WGPS_T_WVIO(2,3);
+
+        Eigen::Quaterniond q_upTemp;
+        q_upTemp = Eigen::Quaterniond(WGPS_T_WVIO.block<3, 3>(0, 0));
+        transformStampedG.transform.rotation.x = q_upTemp.x();
+        transformStampedG.transform.rotation.y = q_upTemp.y();
+        transformStampedG.transform.rotation.z = q_upTemp.z();
+        transformStampedG.transform.rotation.w = q_upTemp.w();
+
+        //static_broadcaster.sendTransform(static_transformStamped);
+        brOpGPS.sendTransform(transformStampedG);
+
+
+       //publish the actual GPS frame
+        transformStampedG.header.stamp = ros::Time(t);
+        transformStampedG.header.frame_id = "worldGPSact";    //reference frame
+        transformStampedG.child_frame_id = "worldGPS";
+        transformStampedG.transform.translation.x = WGPS_T_WVIO_viz(0,3); //read & send the pos
+        transformStampedG.transform.translation.y = WGPS_T_WVIO_viz(1,3);
+        transformStampedG.transform.translation.z = WGPS_T_WVIO_viz(2,3);
+
+        q_upTemp = Eigen::Quaterniond(WGPS_T_WVIO_viz.block<3, 3>(0, 0));
+        transformStampedG.transform.rotation.x = q_upTemp.x();
+        transformStampedG.transform.rotation.y = q_upTemp.y();
+        transformStampedG.transform.rotation.z = q_upTemp.z();
+        transformStampedG.transform.rotation.w = q_upTemp.w();
+
+        //static_broadcaster.sendTransform(static_transformStamped);
+        brOpGPS.sendTransform(transformStampedG);
+
+
+        
+
+        mPoseMap.unlock();
+    }
+
+    void GlobalOptimization::getGlobalOdom(Eigen::Vector3d &odomP, Eigen::Quaterniond &odomQ)
+    {
+        odomP = lastP;
+        odomQ = lastQ;
+    }
+
+    void GlobalOptimization::inputGPS(double t, double latitude, double longitude, double altitude, double posAccuracy)
+    {
+    	double xyz[3];
+    	GPS2XYZ(latitude, longitude, altitude, xyz);
+    	
+        Eigen::Vector3d p_map_curr;
+        Eigen::Vector3d p_gps_curr = Eigen::Vector3d(xyz[0], xyz[1], xyz[2]);
+        p_map_curr = q_enu_map.inverse() * p_gps_curr;
+        vector<double> tmp{p_map_curr.x(), p_map_curr.y(), p_map_curr.z(), posAccuracy};
      mPoseMap.lock();
-	GPSPositionMap[t] = tmp;
+     GPSPositionMap[t] = tmp;
      newGPS = true;
-     mPoseMap.unlock();
-}
 
-void GlobalOptimization::inputGPSPR(double t, double latitude, double longitude, double altitude, double posAccuracy)
-{    
+     mPoseMap.unlock();
+    }
+
+    void GlobalOptimization::inputGPSPR(double t, double latitude, double longitude, double altitude, double posAccuracy)
+    {    
      double xyz[3];
-	GPS2XYZ(latitude, longitude, altitude, xyz);
-	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
+     GPS2XYZ(latitude, longitude, altitude, xyz);
+     vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
      mPoseMap.lock();
-	GPSPRPositionMap[t] = tmp;
+     GPSPRPositionMap[t] = tmp;
      newGPSPR = true;
      mPoseMap.unlock();
-}
+    }
 
-void GlobalOptimization::inputRot(double t, double q_w, double q_x, double q_y, double q_z, double rotAccuracy)
-{
-	vector<double> tmp{q_w, q_x, q_y, q_z, rotAccuracy};
+    void GlobalOptimization::inputRot(double t, double q_w, double q_x, double q_y, double q_z, double rotAccuracy)
+    {
+    	vector<double> tmp{q_w, q_x, q_y, q_z, rotAccuracy};
      mPoseMap.lock();
-	globalRotMap[t] = tmp;
+     globalRotMap[t] = tmp;
      newRot = true;
      mPoseMap.unlock();
-}
+    }
 
-void GlobalOptimization::inputMag(double t, double mag_x, double mag_y, double mag_z, double magAccuracy)
-{
-	vector<double> tmp{mag_x, mag_y, mag_z, magAccuracy};
+    void GlobalOptimization::inputMag(double t, double mag_x, double mag_y, double mag_z, double magAccuracy)
+    {
+    	vector<double> tmp{mag_x, mag_y, mag_z, magAccuracy};
      mPoseMap.lock();
-	magMap[t] = tmp;
+     magMap[t] = tmp;
      newMag = true;
      mPoseMap.unlock();
-}
+    }
 
-void GlobalOptimization::inputPPKviz(double t, double latitude, double longitude, double altitude, double posAccuracy)
-{
-	double xyz[3];
-	GPS2XYZ(latitude, longitude, altitude, xyz);
-	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
+
+    void GlobalOptimization::inputGPSviz(double t, double latitude, double longitude, double altitude, double posAccuracy)
+    {
+    	double xyz[3];
+    	GPS2XYZ(latitude, longitude, altitude, xyz);
+
+    	Eigen::Vector3d p_map_curr;
+        Eigen::Vector3d p_gps_curr = Eigen::Vector3d(xyz[0], xyz[1], xyz[2]);
+        p_map_curr = q_enu_map.inverse() * p_gps_curr;
+        vector<double> tmp{p_map_curr.x(), p_map_curr.y(), p_map_curr.z(), posAccuracy};
      mPoseMap.lock();
-	PPKPositionMap[t] = tmp;
+     GPSPositionMapViz[t] = tmp;
+
+     geometry_msgs::PoseStamped pose_stamped;
+     pose_stamped.header.stamp = ros::Time(t);
+     pose_stamped.header.frame_id = "worldGPSact";
+     pose_stamped.pose.position.x = p_map_curr.x();
+     pose_stamped.pose.position.y = p_map_curr.y();
+     pose_stamped.pose.position.z = p_map_curr.z();
+     pose_stamped.pose.orientation.w = 1.0;
+     pose_stamped.pose.orientation.x = 0.0;
+     pose_stamped.pose.orientation.y = 0.0;
+     pose_stamped.pose.orientation.z = 0.0;
+     gps_path.poses.push_back(pose_stamped);
+
+
+       /*  map<double, vector<double>>::iterator iter3;
+        //cout << "GPS Map size: "<<GPSPositionMap.size() <<endl;//k
+        for (iter3 = GPSPositionMapViz.begin(); iter3 != GPSPositionMapViz.end(); iter3++)
+        {
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header.stamp = ros::Time(iter3->first);
+            pose_stamped.header.frame_id = "worldGPS";
+            pose_stamped.pose.position.x = iter3->second[0];
+            pose_stamped.pose.position.y = iter3->second[1];
+            pose_stamped.pose.position.z = iter3->second[2];
+            pose_stamped.pose.orientation.w = 1.0;
+            pose_stamped.pose.orientation.x = 0.0;
+            pose_stamped.pose.orientation.y = 0.0;
+            pose_stamped.pose.orientation.z = 0.0;
+            gps_path.poses.push_back(pose_stamped);
+        }*/
+
+
+    	// update the WGPS_T_WVIO by minimizing a cost (note that this is acualy WGPS_T_WFUSION)
+    	// for each t in GPS position map
+     map<double, vector<double>>::iterator iter;
+     map<double, vector<double>>::iterator iter2;
+     iter = GPSPositionMapViz.begin();
+     int length = GPSPositionMapViz.size();	
+
+     if (length % 10 == 0  && length!=0){
+
+      ceres::Problem problem;
+
+
+      Eigen::Quaterniond WG_q_WV;
+      Eigen::Vector3d WG_p_B;
+      Eigen::Vector3d WV_p_B;
+      Eigen::Vector3d residual;
+
+
+
+      for (int i = 0; i < length; i++, iter++)
+      {
+       double ti = iter->first;
+    		     // find WG_p_B in GPS pose map
+       WG_p_B = Eigen::Vector3d(iter->second[0], iter->second[1], iter->second[2]);
+    			// find WV_p_B in global pose map (VIO is actualy VLOAM as global map is used)
+       iter2 = globalPoseMap.find(ti);
+       if (iter2 != globalPoseMap.end())
+       {
+        WV_p_B = Eigen::Vector3d(iter2->second[0], iter2->second[1], iter2->second[2]);
+        WG_q_WV =  Eigen::AngleAxisd(map_theta, Eigen::Vector3d::UnitZ());
+        residual = WG_p_B - WG_q_WV * WV_p_B;
+    		          //cout << "Residual :" << residual << endl;
+
+
+        ceres::CostFunction* TrajError_function = TrajError::Create(WG_p_B, WV_p_B, 0.3);
+        problem.AddResidualBlock(TrajError_function, NULL, &map_theta);
+    		     }//else { cout<< "no matching time in global map" << endl;}
+    			// define the cost WG_p_B - WG_R_WV * WV_p_B  (initial yaw only is corrected as drifting)
+
+          }
+
+    		// Run the solver!
+          ceres::Solver::Options options;
+          options.minimizer_progress_to_stdout = false;
+          ceres::Solver::Summary summary;
+          //ceres::Solve(options, &problem, &summary);
+    	  	//std::cout << summary.BriefReport() << "\n";
+          std::cout << "map_theta_optimized (removed): " << map_theta/PI*180 << "\n";
+          
+
+    		// find WVIO_T_B in global pose map (VIO is actualy VLOAM as global map is used)
+    		// define the cost WG_p_B - WG_R_WV * WV_p_B  (initial yaw only is corrected as drifting)
+    		// find initial yaw that minimizes cost
+    		// set WGPS_T_WVIO
+
+
+    		// update and publish error metric ATE , RMSE , % drift
+
+      }    
+
+
+
+      mPoseMap.unlock();     
+    }
+
+    void GlobalOptimization::inputPPKviz(double t, double latitude, double longitude, double altitude, double posAccuracy)
+    {
+    	double xyz[3];
+    	GPS2XYZ(latitude, longitude, altitude, xyz);
+    	vector<double> tmp{xyz[0], xyz[1], xyz[2], posAccuracy};
+     mPoseMap.lock();
+     PPKPositionMap[t] = tmp;
      mPoseMap.unlock();     
 
-	//R----------------------R//
+    	//R----------------------R//
      last_GPS=0;
-	std::ofstream foutF("PPK_bell412_dataset1.txt", std::ios::app);
-    	//std::ofstream foutF("GPS_LH.txt", std::ios::app); 
-    	ppkPosCounter++;
-    	foutF.setf(std::ios::fixed, std::ios::floatfield);
-    	foutF.precision(0);
-    	foutF << ppkPosCounter << " ";
-    	foutF.precision(9);
-    	foutF << t  << " "
-          << xyz[0]  << " "
-          << xyz[1]  << " "
-          << xyz[2]  << std::endl;
+     std::ofstream foutF("PPK_bell412_dataset1.txt", std::ios::app);
+        	//std::ofstream foutF("GPS_LH.txt", std::ios::app); 
+     ppkPosCounter++;
+     foutF.setf(std::ios::fixed, std::ios::floatfield);
+     foutF.precision(0);
+     foutF << ppkPosCounter << " ";
+     foutF.precision(9);
+     foutF << t  << " "
+     << xyz[0]  << " "
+     << xyz[1]  << " "
+     << xyz[2]  << std::endl;
      last_GPS=t;
-	std::cout << t << std::endl;
-	//R----------------------R//
+     std::cout << t << std::endl;
+    	//R----------------------R//
+    }
 
-
-}
-
-void GlobalOptimization::inputFRLviz(double t, double latitude, double longitude, double altitude, double w , double x,  double y,  double z)
-{
-	double xyz[3];
-	GPS2XYZ(latitude, longitude, altitude, xyz);
-	vector<double> tmp{xyz[0], xyz[1], xyz[2], w, x, y, z};
-     mPoseMap.lock();
-	FRLPoseMap[t] = tmp;
-	mPoseMap.unlock();
-}
-
-
-
-void GlobalOptimization::inputSurfnCorners(double t, pcl::PointCloud<PointType>::Ptr& laserCloudCornerLastin, pcl::PointCloud<PointType>::Ptr& laserCloudSurfLastin){
-     
-     mPoseMap.lock();
-     // bufffer this to the optimize thread -  the optimize thread will discard as needed to keep things real time
-     if (newCloud ==  false){
-		laserCloudCornerLast = laserCloudCornerLastin;
-          laserCloudSurfLast = laserCloudSurfLastin;
-          timeLaserCloud = t;
-          //cout << "cloud size "<<laserCloudCornerLastin->size() << "|" << laserCloudCornerLast->size() << "|" << timeLaserCloud <<endl;
-          
-          newCloud =  true;
-	}
-	else {
-          printf("-x");
-	}
-     mPoseMap.unlock();
-}
-
-void GlobalOptimization::optimize()
-{
-    while(true)
+    void GlobalOptimization::inputFRLviz(double t, double latitude, double longitude, double altitude, double w , double x,  double y,  double z)
     {
+    	double xyz[3];
+    	GPS2XYZ(latitude, longitude, altitude, xyz);
+    	vector<double> tmp{xyz[0], xyz[1], xyz[2], w, x, y, z};
+        mPoseMap.lock();
+        FRLPoseMap[t] = tmp;
+        mPoseMap.unlock();
+    }
 
-	   flag_lidar_sync = false;
-        laserCloudSurfFromMapNum = 0;
-        laserCloudCornerFromMapNum = 0;
-        
-        if(newGPS || newRot || newMag || newCloud || newGPSPR) //warning these flags are assumed thread safe ( only read here and locked at writing)
-        {
-            printf("\n --------------------------------------- \n");
-            printf("global optimization %d,%d,%d,%d,%d\n",newGPS,newRot,newMag,newCloud,newGPSPR);
-     
-            TicToc globalOptimizationTime;
 
-            ceres::Problem problem;
-            ceres::Solver::Options options;
-            options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
-            //options.minimizer_progress_to_stdout = true;
-            //options.max_solver_time_in_seconds = SOLVER_TIME * 3;
-            options.max_num_iterations = 5;
-            ceres::Solver::Summary summary;
-            ceres::LossFunction *loss_function;
-            loss_function = new ceres::HuberLoss(1.0);
-            ceres::LocalParameterization* local_parameterization = new ceres::QuaternionParameterization();
 
-            //add param
-            mPoseMap.lock();
-            int length = localPoseMap.size();
-            // w^t_i   w^q_i
-            double t_array[length][3];
-            double q_array[length][4];
-            map<double, vector<double>>::iterator iter;
-            iter = globalPoseMap.begin();
-            for (int i = 0; i < length; i++, iter++)
-            {
-                t_array[i][0] = iter->second[0];
-                t_array[i][1] = iter->second[1];
-                t_array[i][2] = iter->second[2];
-                q_array[i][0] = iter->second[3];
-                q_array[i][1] = iter->second[4];
-                q_array[i][2] = iter->second[5];
-                q_array[i][3] = iter->second[6];
-                problem.AddParameterBlock(q_array[i], 4, local_parameterization);
-                problem.AddParameterBlock(t_array[i], 3);
-            }
+    void GlobalOptimization::inputSurfnCorners(double t, pcl::PointCloud<PointType>::Ptr& laserCloudCornerLastin, pcl::PointCloud<PointType>::Ptr& laserCloudSurfLastin){
+
+     mPoseMap.lock();
+         // bufffer this to the optimize thread -  the optimize thread will discard as needed to keep things real time
+
+
+     if (newCloud ==  false){  //TODO: this should be a buffer with finite size (2-3)
+      laserCloudCornerLast = laserCloudCornerLastin;
+      laserCloudSurfLast = laserCloudSurfLastin;
+      timeLaserCloud = t;
+              //cout << "cloud size "<<laserCloudCornerLastin->size() << "|" << laserCloudCornerLast->size() << "|" << timeLaserCloud <<endl;
+
+      newCloud =  true;
+     }
+     else {
+        // if buffer exceeds max size (1s)- start deleting
+       printf("-x");
+     }
+     mPoseMap.unlock();
+    }
+
+    void GlobalOptimization::optimize()
+    {
+        while(true)
+        {	
+            flag_lidar_sync = false;
+            laserCloudSurfFromMapNum = 0;
+            laserCloudCornerFromMapNum = 0;
             
-          
-            map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS, iterGPSPR, iterRot, iterMag;
-            int pose_i = 0;
-            int synced_pose_i =0;
-            for (iterVIO = localPoseMap.begin(); iterVIO != localPoseMap.end(); iterVIO++, pose_i++)
+            if(newGPS || newRot || newMag || newCloud || newGPSPR) //warning these flags are assumed thread safe ( only read here and locked at writing)
             {
-                //vio factor
-                iterVIONext = iterVIO;
-                iterVIONext++;
-                if(iterVIONext != localPoseMap.end())
-                {
-                    Eigen::Matrix4d wTi = Eigen::Matrix4d::Identity();
-                    Eigen::Matrix4d wTj = Eigen::Matrix4d::Identity();
-                    wTi.block<3, 3>(0, 0) = Eigen::Quaterniond(iterVIO->second[3], iterVIO->second[4], 
-                                                               iterVIO->second[5], iterVIO->second[6]).toRotationMatrix();
-                    wTi.block<3, 1>(0, 3) = Eigen::Vector3d(iterVIO->second[0], iterVIO->second[1], iterVIO->second[2]);
-                    wTj.block<3, 3>(0, 0) = Eigen::Quaterniond(iterVIONext->second[3], iterVIONext->second[4], 
-                                                               iterVIONext->second[5], iterVIONext->second[6]).toRotationMatrix();
-                    wTj.block<3, 1>(0, 3) = Eigen::Vector3d(iterVIONext->second[0], iterVIONext->second[1], iterVIONext->second[2]);
-                    Eigen::Matrix4d iTj = wTi.inverse() * wTj;
-                    Eigen::Quaterniond iQj;
-                    iQj = iTj.block<3, 3>(0, 0);
-                    Eigen::Vector3d iPj = iTj.block<3, 1>(0, 3);
+                printf("\n --------------------------------------- \n");
+                printf("global optimization %d,%d,%d,%d,%d\n",newGPS,newRot,newMag,newCloud,newGPSPR);
 
-                    ceres::CostFunction* vio_function = RelativeRTError::Create(iPj.x(), iPj.y(), iPj.z(),
-                                                                                iQj.w(), iQj.x(), iQj.y(), iQj.z(),
-                                                                                0.1, 0.01);
-                    problem.AddResidualBlock(vio_function, NULL, q_array[pose_i], t_array[pose_i], q_array[pose_i+1], t_array[pose_i+1]);
+                TicToc globalOptimizationTime;
+                
+                map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS, iterGPSPR, iterRot, iterMag, iter;
+                
+                int synced_pose_i =0;
+                double synced_pose_time =0;
+
+    		    // if new cloud - do lidar preperation 
+                mPoseMap.lock();
+
+                int length = localPoseMap.size();
+                if(newCloud|| localPoseMap.size() > 0){
+
+                   iter = globalPoseMap.find(timeLaserCloud);
+
+                   if (iter != globalPoseMap.end()){						
+
+                    if (timeLaserCloud == iter->first){
+                      flag_lidar_sync = true;	
+                      synced_pose_i = std::distance(globalPoseMap.begin(),iter);		          
+                      synced_pose_time = timeLaserCloud;
+
+                    
+                   
+
+                      TicToc t_whole;
+                             // the curertn pose in global map is here : q_array[pose_i], t_array[pose_i];
+
+                        t_w_curr.x() = iter->second[0];
+                        t_w_curr.y() = iter->second[1];
+                        t_w_curr.z() = iter->second[2];
+    					q_w_curr.w() = iter->second[3]; //here {w} is {W_GPS}
+    					q_w_curr.x() = iter->second[4];
+                        q_w_curr.y() = iter->second[5];
+                        q_w_curr.z() = iter->second[6];
+
+                        printf("time %f :", timeLaserCloud);				
+                        std::cout << ":recieved feature cloud with size: " << laserCloudCornerLast->size() << ","<< 
+                        laserCloudSurfLast->size() << "at pose node: " << synced_pose_i << "of" << globalPoseMap.size() <<endl;
+                        std::cout << t_w_curr.x() << " " << t_w_curr.y() << " " << t_w_curr.z() << " " << std::endl;
+                        std::cout << q_w_curr.w() << " " << q_w_curr.x() << " " << q_w_curr.y() << " " << q_w_curr.z() << "" << std::endl;
+
+
+                        Eigen::Vector3d t_wodom_crr = Eigen::Vector3d(localPoseMap.at(timeLaserCloud)[0],localPoseMap.at(timeLaserCloud)[1],localPoseMap.at(timeLaserCloud)[2]);
+                        Eigen::Quaterniond q_wodom_crr = Eigen::Quaterniond(localPoseMap.at(timeLaserCloud)[3],localPoseMap.at(timeLaserCloud)[4],localPoseMap.at(timeLaserCloud)[5],localPoseMap.at(timeLaserCloud)[6]);
+                        Eigen::Vector3d t_wmap_wodom = Eigen::Vector3d(WGPS_T_WVIO.block<3, 1>(0, 3));
+                        Eigen::Quaterniond q_wmap_wodom = Eigen::Quaterniond(WGPS_T_WVIO.block<3, 3>(0, 0));
+                        std::cout << t_wodom_crr.x() << " " << t_wodom_crr.y() << " " << t_wodom_crr.z() << " " << std::endl;
+                        std::cout << q_wodom_crr.w() << " " << q_wodom_crr.x() << " " << q_wodom_crr.y() << " " << q_wodom_crr.z() << "" << std::endl;
+                        std::cout << t_wmap_wodom.x() << " " << t_wmap_wodom.y() << " " << t_wmap_wodom.z() << " " << std::endl;
+                        std::cout << q_wmap_wodom.w() << " " << q_wmap_wodom.x() << " " << q_wmap_wodom.y() << " " << q_wmap_wodom.z() << "" << std::endl;
+
+                       //std::cout << localPoseMap.at(timeLaserCloud)[0] << " " << localPoseMap.at(timeLaserCloud)[1] << " " << localPoseMap.at(timeLaserCloud)[2] ;
+                       //std::cout << WGPS_T_WVIO.block<3, 1>(0, 3)<< std::endl;
+
+    					// move the octree so there is a 2 cube margin around the current pose for it to grow
+                             // keep the cubeindex of the current pose always >2 or < full size -2 (2 cube margin)
+                        TicToc t_shift;
+                        int centerCubeI = int((t_w_curr.x() + 25.0) / 50.0) + laserCloudCenWidth;
+                        int centerCubeJ = int((t_w_curr.y() + 25.0) / 50.0) + laserCloudCenHeight;
+                        int centerCubeK = int((t_w_curr.z() + 25.0) / 50.0) + laserCloudCenDepth;
+
+                        if (t_w_curr.x() + 25.0 < 0)
+                          centerCubeI--;
+                      if (t_w_curr.y() + 25.0 < 0)
+                          centerCubeJ--;
+                      if (t_w_curr.z() + 25.0 < 0)
+                          centerCubeK--;
+
+                      while (centerCubeI < 3)
+                      {
+                          for (int j = 0; j < laserCloudHeight; j++)
+                          {
+                           for (int k = 0; k < laserCloudDepth; k++)
+                           { 
+                            int i = laserCloudWidth - 1;
+                            pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+                            laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k]; 
+                            pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+                            laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                            for (; i >= 1; i--)
+                            {
+                             laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+                             laserCloudCornerArray[i - 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                             laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+                             laserCloudSurfArray[i - 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                         }
+                         laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+                         laserCloudCubeCornerPointer;
+                         laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+                         laserCloudCubeSurfPointer;
+                         laserCloudCubeCornerPointer->clear();
+                         laserCloudCubeSurfPointer->clear();
+                     }
+                 }
+
+                 centerCubeI++;
+                 laserCloudCenWidth++;
+             }
+
+             while (centerCubeI >= laserCloudWidth - 3)
+             { 
+              for (int j = 0; j < laserCloudHeight; j++)
+              {
+               for (int k = 0; k < laserCloudDepth; k++)
+               {
+                int i = 0;
+                pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+                laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+                laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                for (; i < laserCloudWidth - 1; i++)
+                {
+                 laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+                 laserCloudCornerArray[i + 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                 laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+                 laserCloudSurfArray[i + 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+             }
+             laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+             laserCloudCubeCornerPointer;
+             laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+             laserCloudCubeSurfPointer;
+             laserCloudCubeCornerPointer->clear();
+             laserCloudCubeSurfPointer->clear();
+         }
+     }
+
+     centerCubeI--;
+     laserCloudCenWidth--;
+ }
+
+ while (centerCubeJ < 3)
+ {
+  for (int i = 0; i < laserCloudWidth; i++)
+  {
+   for (int k = 0; k < laserCloudDepth; k++)
+   {
+    int j = laserCloudHeight - 1;
+    pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+    laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+    pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+    laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+    for (; j >= 1; j--)
+    {
+     laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+     laserCloudCornerArray[i + laserCloudWidth * (j - 1) + laserCloudWidth * laserCloudHeight * k];
+     laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+     laserCloudSurfArray[i + laserCloudWidth * (j - 1) + laserCloudWidth * laserCloudHeight * k];
+ }
+ laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+ laserCloudCubeCornerPointer;
+ laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+ laserCloudCubeSurfPointer;
+ laserCloudCubeCornerPointer->clear();
+ laserCloudCubeSurfPointer->clear();
+}
+}
+
+centerCubeJ++;
+laserCloudCenHeight++;
+}
+
+while (centerCubeJ >= laserCloudHeight - 3)
+{
+  for (int i = 0; i < laserCloudWidth; i++)
+  {
+   for (int k = 0; k < laserCloudDepth; k++)
+   {
+    int j = 0;
+    pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+    laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+    pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+    laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+    for (; j < laserCloudHeight - 1; j++)
+    {
+     laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+     laserCloudCornerArray[i + laserCloudWidth * (j + 1) + laserCloudWidth * laserCloudHeight * k];
+     laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+     laserCloudSurfArray[i + laserCloudWidth * (j + 1) + laserCloudWidth * laserCloudHeight * k];
+ }
+ laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+ laserCloudCubeCornerPointer;
+ laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+ laserCloudCubeSurfPointer;
+ laserCloudCubeCornerPointer->clear();
+ laserCloudCubeSurfPointer->clear();
+}
+}
+
+centerCubeJ--;
+laserCloudCenHeight--;
+}
+
+while (centerCubeK < 3)
+{
+  for (int i = 0; i < laserCloudWidth; i++)
+  {
+   for (int j = 0; j < laserCloudHeight; j++)
+   {
+    int k = laserCloudDepth - 1;
+    pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+    laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+    pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+    laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+    for (; k >= 1; k--)
+    {
+     laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+     laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k - 1)];
+     laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+     laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k - 1)];
+ }
+ laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+ laserCloudCubeCornerPointer;
+ laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+ laserCloudCubeSurfPointer;
+ laserCloudCubeCornerPointer->clear();
+ laserCloudCubeSurfPointer->clear();
+}
+}
+
+centerCubeK++;
+laserCloudCenDepth++;
+}
+
+while (centerCubeK >= laserCloudDepth - 3)
+{
+  for (int i = 0; i < laserCloudWidth; i++)
+  {
+   for (int j = 0; j < laserCloudHeight; j++)
+   {
+    int k = 0;
+    pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
+    laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+    pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
+    laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+    for (; k < laserCloudDepth - 1; k++)
+    {
+     laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+     laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k + 1)];
+     laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+     laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k + 1)];
+ }
+ laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+ laserCloudCubeCornerPointer;
+ laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
+ laserCloudCubeSurfPointer;
+ laserCloudCubeCornerPointer->clear();
+ laserCloudCubeSurfPointer->clear();
+}
+}
+
+centerCubeK--;
+laserCloudCenDepth--;
+}
+                             // end shift the Octree
+
+
+                             //find the indexes of the clouds which are in the 2 cube neighbourhood of the current pose
+laserCloudValidNum = 0;
+int laserCloudSurroundNum = 0;
+
+for (int i = centerCubeI - 2; i <= centerCubeI + 2; i++)
+{
+  for (int j = centerCubeJ - 2; j <= centerCubeJ + 2; j++)
+  {
+   for (int k = centerCubeK - 1; k <= centerCubeK + 1; k++)
+   {
+    if (i >= 0 && i < laserCloudWidth &&
+     j >= 0 && j < laserCloudHeight &&
+     k >= 0 && k < laserCloudDepth)
+    { 
+     laserCloudValidInd[laserCloudValidNum] = i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k;
+     laserCloudValidNum++;
+     laserCloudSurroundInd[laserCloudSurroundNum] = i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k;
+     laserCloudSurroundNum++;
+ }
+}
+}
+}
+
+printf("Current cube index %d %d %d | for pose %f %f %f |valids %f %f\n", centerCubeI, centerCubeJ, centerCubeK, t_w_curr.x(), t_w_curr.y(), t_w_curr.z(), laserCloudValidNum, laserCloudSurroundNum);
+                             // use those indexes to create a map of the surrounding
+laserCloudCornerFromMap->clear();
+laserCloudSurfFromMap->clear();
+
+for (int i = 0; i < laserCloudValidNum; i++)
+{
+  *laserCloudCornerFromMap += *laserCloudCornerArray[laserCloudValidInd[i]];
+  *laserCloudSurfFromMap += *laserCloudSurfArray[laserCloudValidInd[i]];
+}
+laserCloudCornerFromMapNum = laserCloudCornerFromMap->points.size();
+laserCloudSurfFromMapNum = laserCloudSurfFromMap->points.size();
+
+                             // include the current laser points in a down sampled pcl cloud   
+                             //mPoseMap.lock();
+laserCloudCornerStack->clear();
+downSizeFilterCorner.setInputCloud(laserCloudCornerLast);
+downSizeFilterCorner.filter(*laserCloudCornerStack);
+laserCloudCornerStackNum = laserCloudCornerStack->points.size();
+
+laserCloudSurfStack->clear();
+downSizeFilterSurf.setInputCloud(laserCloudSurfLast);
+downSizeFilterSurf.filter(*laserCloudSurfStack);
+laserCloudSurfStackNum = laserCloudSurfStack->points.size();
+                             //mPoseMap.unlock();
+
+printf("time %f \n", timeLaserCloud);
+printf("map prepare time %f ms\n", t_shift.toc());
+printf("map corner num %d  surf num %d \n", laserCloudCornerFromMapNum, laserCloudSurfFromMapNum);
+printf("stack corner num %d  surf num %d \n", laserCloudCornerStackNum, laserCloudSurfStackNum);  
+                             //scan matching - sent to optimization
+                             
+
+                             // if this is the very first map that wll be initialized
+                             if(laserCloudCornerFromMapNum == 0 && laserCloudCornerStackNum > 0 && !initMap && 0)
+                             {  
+                                /*Eigen::Quaterniond q_Iinit_I = q_wodom_crr;
+                                Eigen::Quaterniond q_Iflat_Iinit; 
+                                q_Iflat_Iinit = Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX());
+                                q_Iflat_I = q_Iflat_Iinit * q_Iinit_I;*/
+                                initMap= true;
+                                printf("Map orientation initialized \n");
+                                //theta_Ienu_I = 0;
+                                //q_Ienu_I = ;
+                                q_enu_map = Eigen::AngleAxisd(51.35/180.0*M_PI, Eigen::Vector3d::UnitZ());
+
+                             }
+
+
+
+                             // post optimization steps are resumed after global path update below
+                             //mPoseMap.lock();
+
+                        }//sync-found			
+    			 }// localMapsize
+
+                }//new cloud
+                newCloud = false; // now the could can buffer in
+                mPoseMap.unlock();
+
+                // if lidar present build tree iteratre twice
+                int max_iterations =1;
+                if(flag_lidar_sync && laserCloudCornerFromMapNum > 10 && laserCloudSurfFromMapNum > 50 ){
+                   TicToc t_tree;
+                   kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMap);
+                   kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMap);
+                   printf("build tree time %f ms \n", t_tree.toc());
+                   max_iterations = 2;
+
+               }
+
+                
+
+    		    //for (int iterCount = 0; iterCount < max_iterations; iterCount++){ // iterate twice for ICP- break if no matches -implemented at ceres init
+                    ceres::Problem problem;
+                    ceres::Solver::Options options;
+                    options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY; //default in loam- Dense QR - very slow
+                    //options.minimizer_progress_to_stdout = true;
+                    //options.max_solver_time_in_seconds = SOLVER_TIME * 3;
+                    options.max_num_iterations = 5;
+                    ceres::Solver::Summary summary;
+                    ceres::LossFunction *loss_function;
+                    loss_function = new ceres::HuberLoss(0.1); // 0.1 in loam? // old 1.0
+                    ceres::LocalParameterization* local_parameterization = new ceres::QuaternionParameterization();
+
+
+                    TicToc t_fac;
+                    //add param
+                    mPoseMap.lock();
+                    
+                    //Factor graph build and optimize
+                    double t_array[length][3];
+                    double q_array[length][4];
+
+                    iter = globalPoseMap.begin();
+                    for (int i = 0; i < length; i++, iter++)
+                    {
+                        t_array[i][0] = iter->second[0];
+                        t_array[i][1] = iter->second[1];
+                        t_array[i][2] = iter->second[2];
+                        q_array[i][0] = iter->second[3];
+                        q_array[i][1] = iter->second[4];
+                        q_array[i][2] = iter->second[5];
+                        q_array[i][3] = iter->second[6];
+                        problem.AddParameterBlock(q_array[i], 4, local_parameterization);
+                        problem.AddParameterBlock(t_array[i], 3);
+                    }
+
+
+                    //map<double, vector<double>>::iterator iterVIO, iterVIONext, iterGPS, iterGPSPR, iterRot, iterMag;
+                    //int pose_i = 0;
+                    //int synced_pose_i =0;
+                    int pose_i = 0;
+                    for (iterVIO = localPoseMap.begin(); pose_i<length ; iterVIO++, pose_i++) //terVIO != localPoseMap.end() - changed so not to check buffer increase
+                    {
+                    //vio factor
+                        iterVIONext = iterVIO;
+                        iterVIONext++;
+
+                        double t = iterVIO->first;// TODO: check if this should be iterVIONext  this corresponds to interator pose_i
+                        if(iterVIONext != localPoseMap.end())
+                        {
+                            Eigen::Matrix4d wTi = Eigen::Matrix4d::Identity();
+                            Eigen::Matrix4d wTj = Eigen::Matrix4d::Identity();
+                            wTi.block<3, 3>(0, 0) = Eigen::Quaterniond(iterVIO->second[3], iterVIO->second[4], 
+                               iterVIO->second[5], iterVIO->second[6]).toRotationMatrix();
+                            wTi.block<3, 1>(0, 3) = Eigen::Vector3d(iterVIO->second[0], iterVIO->second[1], iterVIO->second[2]);
+                            wTj.block<3, 3>(0, 0) = Eigen::Quaterniond(iterVIONext->second[3], iterVIONext->second[4], 
+                               iterVIONext->second[5], iterVIONext->second[6]).toRotationMatrix();
+                            wTj.block<3, 1>(0, 3) = Eigen::Vector3d(iterVIONext->second[0], iterVIONext->second[1], iterVIONext->second[2]);
+                            Eigen::Matrix4d iTj = wTi.inverse() * wTj;
+                            Eigen::Quaterniond iQj;
+                            iQj = iTj.block<3, 3>(0, 0);
+                            Eigen::Vector3d iPj = iTj.block<3, 1>(0, 3);
+
+                       //ceres::CostFunction* vio_function = RelativeRTError::Create(iPj.x(), iPj.y(), iPj.z(),
+                         //                                                           iQj.w(), iQj.x(), iQj.y(), iQj.z(),
+                         //                                                          0.1, 0.01);
+                        //cout << pose_i << q_array[pose_i+1][0] << ",";
+                        //problem.AddResidualBlock(vio_function, NULL, q_array[pose_i], t_array[pose_i], q_array[pose_i+1], t_array[pose_i+1]);
+
+                            //if synced pose add a factor for global orientation
+                            if( synced_pose_time != 0 && t==synced_pose_time){
+                                    printf("Added Rot for time %f \n", synced_pose_time);
+                                    ceres::CostFunction* rot_function = RError::Create(iterVIO->second[3], iterVIO->second[4], 
+                                    iterVIO->second[5], iterVIO->second[6],0.005);
+                                    //printf("inverse weight %f \n", iterGPS->second[3]);
+                                    problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);
+                                        
+                            }
+                        }
+                        
+
+                    //gps factor
+                    
+                    
+
+                    //initialization factor if GPS is available
+                    /*if (GPSPositionMap.size() >0 && pose_i<10){ // for the first 10 poses
+    			     iterGPS = GPSPositionMap.find(t);
+                    	if (iterGPS != GPSPositionMap.end())
+                    	{
+                       	     ceres::CostFunction* gps_function = TError::Create(iterGPS->second[0], iterGPS->second[1], 
+                                                                           iterGPS->second[2], 0.3);
+                        	printf("Init. \n");
+                        	problem.AddResidualBlock(gps_function, loss_function, t_array[pose_i]);
+
+                    	}
+    			     } // init factor - handled below */
+
+                    if(newGPS || GPSPositionMap.size() >0){
+                       // edit - for dense loam - add the gps for the synced pose only
+                        if( synced_pose_time != 0 && t==synced_pose_time){
+                        iterGPS = GPSPositionMap.find(t);
+                        
+                        if (iterGPS != GPSPositionMap.end())
+                        {
+                             printf("Added GPS for time %f \n", synced_pose_time);
+                            ceres::CostFunction* gps_function = TError::Create(iterGPS->second[0], iterGPS->second[1]
+                                , iterGPS->second[2], 0.05); //iterGPS->second[3]
+                        //printf("inverse weight %f \n", iterGPS->second[3]);
+                            //problem.AddResidualBlock(gps_function, loss_function, t_array[pose_i]);
+                            problem.AddResidualBlock(gps_function, NULL, t_array[pose_i]);
+                        }
+                        }
+                    }//newGPS
+
+
+                    if(newGPSPR || GPSPRPositionMap.size() >0){
+                        iterGPSPR = GPSPRPositionMap.find(t);
+                        if (iterGPSPR != GPSPRPositionMap.end())
+                        {
+                            ceres::CostFunction* gps_pr_function = XYError::Create(iterGPSPR->second[0], iterGPSPR->second[1], 
+                               iterGPSPR->second[2], iterGPSPR->second[3]);
+                        //printf("inverse weight %f \n", iterGPS->second[3]);
+                            cout << "recieved place recognition match with size: " << iterGPSPR->second[0]<< ','<< iterGPSPR->second[1] << " at pose node: " << pose_i << " of " << length <<endl;
+                            problem.AddResidualBlock(gps_pr_function, loss_function, t_array[pose_i]);
+
+                    }}//newGPSPR
+
+
+                    // O- Rot factor (FULL AHRS INPUT) --k
+                    if(newRot || globalRotMap.size() >0){iterRot = globalRotMap.find(t);
+                    if (iterRot != globalRotMap.end())
+                    {
+                        ceres::CostFunction* rot_function = RError::Create(iterRot->second[0], iterRot->second[1], 
+                           iterRot->second[2], iterRot->second[3],0.01);
+                        //printf("inverse weight %f \n", iterGPS->second[3]);
+                        problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);
+
+                    }}
+
+    			     // O- Rot factor (Yaw INPUT) - k possible lag ~1-2 second
+                   /*if(newRot){
+                   iterRot = globalRotMap.find(t);
+                   if (iterRot != globalRotMap.end())
+                   {
+    				// take the quaternion
+    				double w_q_i[4] = {iterRot->second[0], iterRot->second[1], iterRot->second[2], iterRot->second[3]};
+    				// convert to yaw
+                        double siny_cosp = 2 * (w_q_i[0] * w_q_i[3] + w_q_i[1] * w_q_i[2]);
+        				double cosy_cosp = 1 - 2 * (w_q_i[2] * w_q_i[2] + w_q_i[3] * w_q_i[3]);
+        				double yaw_meas = atan2(siny_cosp, cosy_cosp);
+                        //cout << "FRL yaw | " << yaw_meas*180.0/M_PI;
+    		
+    				//add factor
+                        ceres::CostFunction* rot_function = YError::Create(yaw_meas,0.01);
+                        problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);	
+
+                   }}*///newRot
+
+
+    			//O- mag factor as heading // note AHRS input is implicitly added here - roll pitch from AHRS IMU, Yaw from Mag 
+                   //TODO: to evaluate without Mag we need a roll pitch only global factor ( i.e. global VRU reference residual = R^T*g_E-y_vru)
+                    if(newMag || magMap.size() > 0){
+                       iterMag = magMap.find(t);
+                       if (iterMag != magMap.end())
+                       {
+                        double mag_meas[3] = {iterMag->second[0], iterMag->second[1], iterMag->second[2]};
+    				//cout << "| Xsense Mag | " << mag_meas[0] <<  "," << mag_meas[1] <<  ","<< mag_meas[2] <<t <<"'" << magMap.size() ;
+
+    				// this has the vio attitude info
+                        Eigen::Quaterniond q_vio = Eigen::Quaterniond(iterVIO->second[3], iterVIO->second[4], iterVIO->second[5], iterVIO->second[6]);
+                        Eigen::Vector3d euler = q_vio.toRotationMatrix().eulerAngles(2, 1, 0);
+
+    				//adjust mag reading                    
+                        Eigen::Quaterniond q_vio_no_yaw =  Eigen::AngleAxisd(0.0, Eigen::Vector3d::UnitZ())
+                        * Eigen::AngleAxisd(euler[1], Eigen::Vector3d::UnitY())
+                        * Eigen::AngleAxisd(euler[2], Eigen::Vector3d::UnitX());
+
+    				//Eigen::Vector3d mag_meas_flat = q_vio_no_yaw * Eigen::Vector3d((mag_meas[0]-0.1829)/1.2073,(mag_meas[1]+0.1630)/1.1773,(mag_meas[2]+0.3197)/1.2761); //manual calib
+                        Eigen::Vector3d mag_meas_flat = q_vio_no_yaw * Eigen::Vector3d((mag_meas[0]-0.2435)/1.3211,(mag_meas[1]+0.1588)/1.3241,(mag_meas[2]+1.8277)/2.2852); // using frl and declination data
+
+
+    				//double mag_ref[3]= {0.3633,0.0639,-0.4980}; //manual calib
+                        double mag_ref[3]= {0.3338,0.0884,-0.9385};  // using frl and declination data
+
+                        double yaw_mag = atan2(mag_ref[1],mag_ref[0]) - atan2(mag_meas_flat[1],mag_meas_flat[0]);
+
+
+
+                        //cout << "| Vio q | " << q_vio.w() << "," << q_vio.x() << "," << q_vio.y() << "," << q_vio.z()  <<"| Vio eul | "<< atan2(sin(euler[0]),cos(euler[0])) <<  "," << atan2(sin(euler[1]),cos(euler[1])) <<  ","<< atan2(sin(euler[2]),cos(euler[2]))  << "," << -90.0 + yaw_mag/M_PI*180 << endl;
+
+    				// remove attitude of the mag vector
+
+    				// use the magnetic reference to find the yaw - true heading
+
+    				// add factor -error
+                        //ceres::CostFunction* rot_function = YError::Create(-3*M_PI/2+yaw_mag,0.05);
+                        //problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);
+
+
+                        Eigen::Quaterniond q_meas =  Eigen::AngleAxisd(-3*M_PI/2+yaw_mag, Eigen::Vector3d::UnitZ()) // this +90 or - 270 is needed due to baing caliberated for NWU and missing wrap to pi
+                        * Eigen::AngleAxisd(euler[1], Eigen::Vector3d::UnitY())
+                        * Eigen::AngleAxisd(euler[2], Eigen::Vector3d::UnitX());
+                        ceres::CostFunction* rot_function = RError::Create(q_meas.w(), q_meas.x(), 
+                           q_meas.y(), q_meas.z(),0.01);
+                        //printf("inverse weight %f \n", iterGPS->second[3]);
+                        problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);
+    				//char test;
+    				//cin >> test;
+                   }}//newMag	
+                }// pose graph iterator    
+                    newGPS = false;
+                    newRot = false;
+                    newMag = false;
+                    newGPSPR = false;
+
+                    mPoseMap.unlock();
+                    // the rest can happen while the measurements buffer in
+
+                    printf("global pose factor build time %f ms \n", t_fac.toc());
+
+        		    //if(flag_lidar_sync && laserCloudCornerFromMapNum > 10 && laserCloudSurfFromMapNum > 50){
+        		    if(flag_lidar_sync && laserCloudCornerFromMapNum > 10 && laserCloudSurfFromMapNum > 50 ){ //ravindu
+        			
+        				TicToc t_data;
+        				int corner_num = 0;
+        				for (int i = 0; i < laserCloudCornerStackNum; i++){
+        					pointOri = laserCloudCornerStack->points[i];
+        					//double sqrtDis = pointOri.x * pointOri.x + pointOri.y * pointOri.y + pointOri.z * pointOri.z;
+        					pointAssociateToMap(&pointOri, &pointSel); // warning uses the global t_w_curr
+        					kdtreeCornerFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis); // find the nearest 5
+
+        					if (pointSearchSqDis[4] < 1.0)
+        					{ 
+        						std::vector<Eigen::Vector3d> nearCorners;
+        						Eigen::Vector3d center(0, 0, 0);
+        						// mean of nearest points
+        						for (int j = 0; j < 5; j++)
+        						{
+        							Eigen::Vector3d tmp(laserCloudCornerFromMap->points[pointSearchInd[j]].x,
+                                       laserCloudCornerFromMap->points[pointSearchInd[j]].y,
+                                       laserCloudCornerFromMap->points[pointSearchInd[j]].z);
+        							center = center + tmp;
+        							nearCorners.push_back(tmp);
+        						}
+        						center = center / 5.0;
+
+        						//covariance matrix of nearest points
+        						Eigen::Matrix3d covMat = Eigen::Matrix3d::Zero();
+        						for (int j = 0; j < 5; j++)
+        						{
+        							Eigen::Matrix<double, 3, 1> tmpZeroMean = nearCorners[j] - center;
+        							covMat = covMat + tmpZeroMean * tmpZeroMean.transpose();
+        						}
+
+        						Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(covMat);
+
+        						// if is indeed line feature ( checks the highest eigen value is larger than 3 times the second smallest)
+        						// note Eigen library sort eigenvalues in increasing order
+        						Eigen::Vector3d unit_direction = saes.eigenvectors().col(2);
+                              Eigen::Vector3d curr_point_L(pointOri.x, pointOri.y, pointOri.z);
+
+                                      //O - change the current point to IMU frame  
+                                      Eigen::Vector3d curr_point = q_I_L * curr_point_L + t_I_L;   
+                              //Eigen::Vector3d curr_point = curr_point_L;               
+
+                              if (saes.eigenvalues()[2] > 3 * saes.eigenvalues()[1])
+                              { 
+                               Eigen::Vector3d point_on_line = center;
+                               Eigen::Vector3d point_a, point_b;
+        							point_a = 0.1 * unit_direction + point_on_line; //find two points to define the line
+        							point_b = -0.1 * unit_direction + point_on_line;
+
+        							ceres::CostFunction *cost_function = LidarEdgeFactor::Create(curr_point, point_a, point_b, 1.0);
+        							problem.AddResidualBlock(cost_function, loss_function, q_array[synced_pose_i], t_array[synced_pose_i]);
+        							corner_num++;	
+        						}							
+        					}
+        					/*
+        					else if(pointSearchSqDis[4] < 0.01 * sqrtDis)
+        					{
+        						Eigen::Vector3d center(0, 0, 0);
+        						for (int j = 0; j < 5; j++)
+        						{
+        							Eigen::Vector3d tmp(laserCloudCornerFromMap->points[pointSearchInd[j]].x,
+        													laserCloudCornerFromMap->points[pointSearchInd[j]].y,
+        													laserCloudCornerFromMap->points[pointSearchInd[j]].z);
+        							center = center + tmp;
+        						}
+        						center = center / 5.0;	
+        						Eigen::Vector3d curr_point(pointOri.x, pointOri.y, pointOri.z);
+        						ceres::CostFunction *cost_function = LidarDistanceFactor::Create(curr_point, center);
+        						problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 4);
+        					}
+        					*/
+        				}
+
+
+        				int surf_num = 0;
+        				for (int i = 0; i < laserCloudSurfStackNum; i++)
+        				{
+        					pointOri = laserCloudSurfStack->points[i];
+        					//double sqrtDis = pointOri.x * pointOri.x + pointOri.y * pointOri.y + pointOri.z * pointOri.z;
+        					pointAssociateToMap(&pointOri, &pointSel);
+        					kdtreeSurfFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
+
+        					Eigen::Matrix<double, 5, 3> matA0;
+        					Eigen::Matrix<double, 5, 1> matB0 = -1 * Eigen::Matrix<double, 5, 1>::Ones();
+        					if (pointSearchSqDis[4] < 1.0)				
+        					{						
+        						for (int j = 0; j < 5; j++)
+        						{
+        							matA0(j, 0) = laserCloudSurfFromMap->points[pointSearchInd[j]].x;
+        							matA0(j, 1) = laserCloudSurfFromMap->points[pointSearchInd[j]].y;
+        							matA0(j, 2) = laserCloudSurfFromMap->points[pointSearchInd[j]].z;
+        							//printf(" pts %f %f %f ", matA0(j, 0), matA0(j, 1), matA0(j, 2));
+        						}
+        						// find the norm of plane
+        						Eigen::Vector3d norm = matA0.colPivHouseholderQr().solve(matB0);
+        						double negative_OA_dot_norm = 1 / norm.norm();
+        						norm.normalize();
+
+        						// Here n(pa, pb, pc) is unit norm of plane
+        						bool planeValid = true;
+        						for (int j = 0; j < 5; j++)
+        						{
+        							// if OX * n > 0.2, then plane is not fit well
+        							if (fabs(norm(0) * laserCloudSurfFromMap->points[pointSearchInd[j]].x +
+        								norm(1) * laserCloudSurfFromMap->points[pointSearchInd[j]].y +
+        								norm(2) * laserCloudSurfFromMap->points[pointSearchInd[j]].z + negative_OA_dot_norm) > 0.2)
+        							{
+        								planeValid = false;
+        								break;
+        							}
+        						}
+        						Eigen::Vector3d curr_point_L(pointOri.x, pointOri.y, pointOri.z);
+
+                                      //O - change the current point to IMU frame  
+                                      Eigen::Vector3d curr_point = q_I_L * curr_point_L + t_I_L;
+                              //Eigen::Vector3d curr_point = curr_point_L;
+                              if (planeValid)
+                              {
+                               ceres::CostFunction *cost_function = LidarPlaneNormFactor::Create(curr_point, norm, negative_OA_dot_norm);
+                               problem.AddResidualBlock(cost_function, loss_function, q_array[synced_pose_i], t_array[synced_pose_i]);
+                               surf_num++;
+                           }
+                       }
+        					/*
+        					else if(pointSearchSqDis[4] < 0.01 * sqrtDis)
+        					{
+        						Eigen::Vector3d center(0, 0, 0);
+        						for (int j = 0; j < 5; j++)
+        						{
+        							Eigen::Vector3d tmp(laserCloudSurfFromMap->points[pointSearchInd[j]].x,
+        												laserCloudSurfFromMap->points[pointSearchInd[j]].y,
+        												laserCloudSurfFromMap->points[pointSearchInd[j]].z);
+        							center = center + tmp;
+        						}
+        						center = center / 5.0;	
+        						Eigen::Vector3d curr_point(pointOri.x, pointOri.y, pointOri.z);
+        						ceres::CostFunction *cost_function = LidarDistanceFactor::Create(curr_point, center);
+        						problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 4);
+        					}
+        					*/
+                   }
+
+                       // add gps factor
+
+                       printf("corner num %d used corner num %d \n", laserCloudCornerStackNum, corner_num);
+                       printf("surf num %d used surf num %d \n", laserCloudSurfStackNum, surf_num);
+                       printf("mapping data assosiation time %f ms \n", t_data.toc());
+                       ceres::Solver::Options options;
+                       options.linear_solver_type = ceres::DENSE_QR;
+                       options.max_num_iterations = 4;
+                       options.minimizer_progress_to_stdout = false;
+                       options.check_gradients = false;
+                       options.gradient_check_relative_precision = 1e-4;
+                       ceres::Solve(options, &problem, &summary);
+                       printf("time %f \n", timeLaserCloud);
+                       printf("corner factor num %d surf factor num %d\n", corner_num, surf_num);
+                       printf("result q %f %f %f %f result t %f %f %f\n", q_array[synced_pose_i][0], q_array[synced_pose_i][1], q_array[synced_pose_i][2], q_array[synced_pose_i][3],t_array[synced_pose_i][0],t_array[synced_pose_i][1],t_array[synced_pose_i][2]);
+                       std::cout << summary.BriefReport() << "\n";
+        			   if(corner_num<5 && surf_num <5){ // there is not enough associations break
+                            ROS_WARN("Insufficient Lidar feature matches");
+                            break;
+                       }
+
+                        //update current pose used by lidar mapper
+                        // the pose graph is now updated by the optimizer -- retrieve current scan pose
+                         q_w_curr = Eigen::Quaterniond(q_array[synced_pose_i][0],q_array[synced_pose_i][1],q_array[synced_pose_i][2],q_array[synced_pose_i][3]); 
+                         t_w_curr = Eigen::Vector3d(t_array[synced_pose_i][0],t_array[synced_pose_i][1],t_array[synced_pose_i][2]);
+                
+                    
+                    }// flag_lidar_sync 
+        		    else{ //this is the update without scan matching
+                        ROS_WARN("No Lidar update");
+                        ceres::Solve(options, &problem, &summary);
+                        //std::cout << summary.BriefReport() << "\n";
+                    }
+
+                    if(flag_lidar_sync ){
+                    
+                        //otherwise the first scan not registered correctly
+                        q_w_curr = Eigen::Quaterniond(q_array[synced_pose_i][0],q_array[synced_pose_i][1],q_array[synced_pose_i][2],q_array[synced_pose_i][3]); 
+                        t_w_curr = Eigen::Vector3d(t_array[synced_pose_i][0],t_array[synced_pose_i][1],t_array[synced_pose_i][2]);
+
+                    }
+
+
+                    // update global pose - at this point there can be more poses filled to the global Posemap
+                    mPoseMap.lock();
+                    int i = 0;
+                    if(globalPoseMap.size()>0 ){
+                        iter = globalPoseMap.begin();
+                        for (i = 0; i < length; i++, iter++)
+                        {
+                         vector<double> globalPose{t_array[i][0], t_array[i][1], t_array[i][2],
+                         q_array[i][0], q_array[i][1], q_array[i][2], q_array[i][3]};
+                         iter->second = globalPose;
+
+                         //cout<< "Pose "<< i << " :" << t_array[i][0]<< " :" <<  t_array[i][1]<< " :" << t_array[i][2]<< " :" <<
+                           //       q_array[i][0]<< " :" <<q_array[i][1]<< " :" <<q_array[i][2]<< " :" << q_array[i][3] << endl;
+
+                               //this is fo visualization and optimizaiton -  here the the update should match to the optimized pose node in case of the lidar
+                            if (synced_pose_i ==0 ) {synced_pose_i =length - 1;} // handle no lidar update case
+
+
+                            //synced_pose_i =length - 1;
+                            if(i == synced_pose_i)//(i == length - 1) 
+                            {
+                                 Eigen::Matrix4d WVIO_T_body = Eigen::Matrix4d::Identity(); 
+                                 Eigen::Matrix4d WGPS_T_body = Eigen::Matrix4d::Identity();
+                                 double t = iter->first;
+                                 WVIO_T_body.block<3, 3>(0, 0) = Eigen::Quaterniond(localPoseMap[t][3], localPoseMap[t][4], 
+                                    localPoseMap[t][5], localPoseMap[t][6]).toRotationMatrix();
+                                 WVIO_T_body.block<3, 1>(0, 3) = Eigen::Vector3d(localPoseMap[t][0], localPoseMap[t][1], localPoseMap[t][2]);
+                                 WGPS_T_body.block<3, 3>(0, 0) = Eigen::Quaterniond(globalPose[3], globalPose[4], 
+                                     globalPose[5], globalPose[6]).toRotationMatrix();
+                                 WGPS_T_body.block<
+                                 3, 1>(0, 3) = Eigen::Vector3d(globalPose[0], globalPose[1], globalPose[2]);
+                                 WGPS_T_WVIO = WGPS_T_body * WVIO_T_body.inverse();
+                                 break;
+                            }
+                            
+                        }
+                    }
+                    if(globalPoseMap.size()>synced_pose_i && synced_pose_i>0 ){
+                        while(i<globalPoseMap.size()-1){
+                            iter++; i++;
+                            double t = iter->first;
+                            //get the local pose
+                            Eigen::Matrix4d WVIO_T_body = Eigen::Matrix4d::Identity();
+                            WVIO_T_body.block<3, 3>(0, 0) = Eigen::Quaterniond(localPoseMap[t][3], localPoseMap[t][4], 
+                                localPoseMap[t][5], localPoseMap[t][6]).toRotationMatrix();
+                            WVIO_T_body.block<3, 1>(0, 3) = Eigen::Vector3d(localPoseMap[t][0], localPoseMap[t][1], localPoseMap[t][2]);
+                            //recalculate global pose
+                            Eigen::Matrix4d WGPS_T_body = WGPS_T_WVIO * WVIO_T_body;
+                            //set the global pose
+                            Eigen::Vector3d WGPS_t_body = Eigen::Vector3d(WGPS_T_body.block<3, 1>(0, 3));
+                            Eigen::Quaterniond WGPS_q_body = Eigen::Quaterniond(WGPS_T_body.block<3, 3>(0, 0));
+
+                            vector<double> globalPose{WGPS_t_body.x(), WGPS_t_body.y(), WGPS_t_body.z(),
+                            WGPS_q_body.w(), WGPS_q_body.x(), WGPS_q_body.y(), WGPS_q_body.z()};
+                            iter->second = globalPose;
+                           // cout<< "Pose "<< i  << "of " << globalPoseMap.size()-1 << " :" << WGPS_t_body.x()<< " :" <<  WGPS_t_body.y()<< " :" << WGPS_t_body.z()<< " :" <<
+                            //   WGPS_q_body.w()<< " :" << WGPS_q_body.x()<< " :" << WGPS_q_body.y()<< " :" << WGPS_q_body.z() << endl;
+                        }
+                    }
+
+
+                    mPoseMap.unlock();
+                //}//ICP iteration loop from ceres int
+               
+                //published the updated path
+                mPoseMap.lock();
+                updateGlobalPath(); 
+
+                // completing the rest of the lidar mapping steps - add points
+                if(flag_lidar_sync ){
+                    
+            
+        			// start adding scans to the map			
+                   TicToc t_add;
+                   for (int i = 0; i < laserCloudCornerStackNum; i++)
+                   {
+                    pointAssociateToMap(&laserCloudCornerStack->points[i], &pointSel);
+
+                    int cubeI = int((pointSel.x + 25.0) / 50.0) + laserCloudCenWidth;
+                    int cubeJ = int((pointSel.y + 25.0) / 50.0) + laserCloudCenHeight;
+                    int cubeK = int((pointSel.z + 25.0) / 50.0) + laserCloudCenDepth;
+
+                    if (pointSel.x + 25.0 < 0)
+                       cubeI--;
+                   if (pointSel.y + 25.0 < 0)
+                       cubeJ--;
+                   if (pointSel.z + 25.0 < 0)
+                       cubeK--;
+
+                   if (cubeI >= 0 && cubeI < laserCloudWidth &&
+                       cubeJ >= 0 && cubeJ < laserCloudHeight &&
+                       cubeK >= 0 && cubeK < laserCloudDepth)
+                   {
+                       int cubeInd = cubeI + laserCloudWidth * cubeJ + laserCloudWidth * laserCloudHeight * cubeK;
+                       laserCloudCornerArray[cubeInd]->push_back(pointSel);
+                   }
+
+            				//debugging
+            				/*if(i<10){
+            					printf("Last cube index %d %d %d | for point %f %f %f | for pose %f %f %f \n", cubeI, cubeJ, cubeK, pointSel.x, pointSel.y, pointSel.z, t_w_curr.x(), t_w_curr.y(), t_w_curr.z() );
+            				}*/
+
+                    }
+
+                   for (int i = 0; i < laserCloudSurfStackNum; i++)
+                   {
+                    pointAssociateToMap(&laserCloudSurfStack->points[i], &pointSel);
+
+                    int cubeI = int((pointSel.x + 25.0) / 50.0) + laserCloudCenWidth;
+                    int cubeJ = int((pointSel.y + 25.0) / 50.0) + laserCloudCenHeight;
+                    int cubeK = int((pointSel.z + 25.0) / 50.0) + laserCloudCenDepth;
+
+                    if (pointSel.x + 25.0 < 0)
+                       cubeI--;
+                   if (pointSel.y + 25.0 < 0)
+                       cubeJ--;
+                   if (pointSel.z + 25.0 < 0)
+                       cubeK--;
+
+                   if (cubeI >= 0 && cubeI < laserCloudWidth &&
+                       cubeJ >= 0 && cubeJ < laserCloudHeight &&
+                       cubeK >= 0 && cubeK < laserCloudDepth)
+                       {
+                           int cubeInd = cubeI + laserCloudWidth * cubeJ + laserCloudWidth * laserCloudHeight * cubeK;
+                           laserCloudSurfArray[cubeInd]->push_back(pointSel);
+                       }
+                   }
+
+                    printf("add points time %f ms\n", t_add.toc());
+
+                   TicToc t_filter;
+                   for (int i = 0; i < laserCloudValidNum; i++)
+                   {
+                    int ind = laserCloudValidInd[i];
+
+                    pcl::PointCloud<PointType>::Ptr tmpCorner(new pcl::PointCloud<PointType>());
+                    downSizeFilterCorner.setInputCloud(laserCloudCornerArray[ind]);
+                    downSizeFilterCorner.filter(*tmpCorner);
+                    laserCloudCornerArray[ind] = tmpCorner;
+
+                    pcl::PointCloud<PointType>::Ptr tmpSurf(new pcl::PointCloud<PointType>());
+                    downSizeFilterSurf.setInputCloud(laserCloudSurfArray[ind]);
+                    downSizeFilterSurf.filter(*tmpSurf);
+                    laserCloudSurfArray[ind] = tmpSurf;
+                    }
+                    printf("filter time %f ms \n", t_filter.toc());
+
+                    flag_lidar_sync = false;
                 }
 
-			 
-                //gps factor
-                double t = iterVIO->first;// TODO: check if this should be iterVIONext  this corresponds to interator pose_i
-                
 
-                //initialization factor if GPS is available
-                /*if (GPSPositionMap.size() >0 && pose_i<10){ // for the first 10 poses
-			     iterGPS = GPSPositionMap.find(t);
-                	if (iterGPS != GPSPositionMap.end())
-                	{
-                   	     ceres::CostFunction* gps_function = TError::Create(iterGPS->second[0], iterGPS->second[1], 
-                                                                       iterGPS->second[2], 0.3);
-                    	printf("Init. \n");
-                    	problem.AddResidualBlock(gps_function, loss_function, t_array[pose_i]);
-
-                	}
-			 } // init factor - handled below */
-
-                if(newGPS || GPSPositionMap.size() >0){
-                iterGPS = GPSPositionMap.find(t);
-                if (iterGPS != GPSPositionMap.end())
-                {
-                    ceres::CostFunction* gps_function = TError::Create(iterGPS->second[0], iterGPS->second[1], 
-                                                                       iterGPS->second[2], iterGPS->second[3]);
-                    //printf("inverse weight %f \n", iterGPS->second[3]);
-                    problem.AddResidualBlock(gps_function, loss_function, t_array[pose_i]);
-
-                }}//newGPS
-
-
-                if(newGPSPR || GPSPRPositionMap.size() >0){
-                iterGPSPR = GPSPRPositionMap.find(t);
-                if (iterGPSPR != GPSPRPositionMap.end())
-                {
-                    ceres::CostFunction* gps_pr_function = XYError::Create(iterGPSPR->second[0], iterGPSPR->second[1], 
-                                                                       iterGPSPR->second[2], iterGPSPR->second[3]);
-                    //printf("inverse weight %f \n", iterGPS->second[3]);
-				cout << "recieved place recognition match with size: " << iterGPSPR->second[0]<< ','<< iterGPSPR->second[1] << " at pose node: " << pose_i << " of " << length <<endl;
-                    problem.AddResidualBlock(gps_pr_function, loss_function, t_array[pose_i]);
-
-                }}//newGPSPR
-
-
-                // O- Rot factor (FULL AHRS INPUT) --k
-                if(newRot || globalRotMap.size() >0){iterRot = globalRotMap.find(t);
-                if (iterRot != globalRotMap.end())
-                {
-                    ceres::CostFunction* rot_function = RError::Create(iterRot->second[0], iterRot->second[1], 
-                                                                       iterRot->second[2], iterRot->second[3],0.01);
-                    //printf("inverse weight %f \n", iterGPS->second[3]);
-                    problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);
-
-                }}
-			
-			// O- Rot factor (Yaw INPUT) - k possible lag ~1-2 second
-               /*if(newRot){
-               iterRot = globalRotMap.find(t);
-               if (iterRot != globalRotMap.end())
-               {
-				// take the quaternion
-				double w_q_i[4] = {iterRot->second[0], iterRot->second[1], iterRot->second[2], iterRot->second[3]};
-				// convert to yaw
-                    double siny_cosp = 2 * (w_q_i[0] * w_q_i[3] + w_q_i[1] * w_q_i[2]);
-    				double cosy_cosp = 1 - 2 * (w_q_i[2] * w_q_i[2] + w_q_i[3] * w_q_i[3]);
-    				double yaw_meas = atan2(siny_cosp, cosy_cosp);
-                    //cout << "FRL yaw | " << yaw_meas*180.0/M_PI;
-		
-				//add factor
-                    ceres::CostFunction* rot_function = YError::Create(yaw_meas,0.01);
-                    problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);	
-
-               }}*///newRot
-
-              
-			//O- mag factor as heading // note AHRS input is implicitly added here - roll pitch from AHRS IMU, Yaw from Mag 
-               //TODO: to evaluate without Mag we need a roll pitch only global factor ( i.e. global VRU reference residual = R^T*g_E-y_vru)
-               if(newMag || magMap.size() > 0){
-               iterMag = magMap.find(t);
-               if (iterMag != magMap.end())
-               {
-				double mag_meas[3] = {iterMag->second[0], iterMag->second[1], iterMag->second[2]};
-				//cout << "| Xsense Mag | " << mag_meas[0] <<  "," << mag_meas[1] <<  ","<< mag_meas[2] <<t <<"'" << magMap.size() ;
-				
-				// this has the vio attitude info
-				Eigen::Quaterniond q_vio = Eigen::Quaterniond(iterVIO->second[3], iterVIO->second[4], iterVIO->second[5], iterVIO->second[6]);
-                    Eigen::Vector3d euler = q_vio.toRotationMatrix().eulerAngles(2, 1, 0);
-				
-				//adjust mag reading                    
-				Eigen::Quaterniond q_vio_no_yaw =  Eigen::AngleAxisd(0.0, Eigen::Vector3d::UnitZ())
-    				* Eigen::AngleAxisd(euler[1], Eigen::Vector3d::UnitY())
-    				* Eigen::AngleAxisd(euler[2], Eigen::Vector3d::UnitX());
-
-				//Eigen::Vector3d mag_meas_flat = q_vio_no_yaw * Eigen::Vector3d((mag_meas[0]-0.1829)/1.2073,(mag_meas[1]+0.1630)/1.1773,(mag_meas[2]+0.3197)/1.2761); //manual calib
-                    Eigen::Vector3d mag_meas_flat = q_vio_no_yaw * Eigen::Vector3d((mag_meas[0]-0.2435)/1.3211,(mag_meas[1]+0.1588)/1.3241,(mag_meas[2]+1.8277)/2.2852); // using frl and declination data
-
-
-				//double mag_ref[3]= {0.3633,0.0639,-0.4980}; //manual calib
-                    double mag_ref[3]= {0.3338,0.0884,-0.9385};  // using frl and declination data
-				
-                    double yaw_mag = atan2(mag_ref[1],mag_ref[0]) - atan2(mag_meas_flat[1],mag_meas_flat[0]);
-
-
-
-                    //cout << "| Vio q | " << q_vio.w() << "," << q_vio.x() << "," << q_vio.y() << "," << q_vio.z()  <<"| Vio eul | "<< atan2(sin(euler[0]),cos(euler[0])) <<  "," << atan2(sin(euler[1]),cos(euler[1])) <<  ","<< atan2(sin(euler[2]),cos(euler[2]))  << "," << -90.0 + yaw_mag/M_PI*180 << endl;
-				
-				// remove attitude of the mag vector
-
-				// use the magnetic reference to find the yaw - true heading
-
-				// add factor -error
-                    //ceres::CostFunction* rot_function = YError::Create(-3*M_PI/2+yaw_mag,0.05);
-                    //problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);
-
-
-                    Eigen::Quaterniond q_meas =  Eigen::AngleAxisd(-3*M_PI/2+yaw_mag, Eigen::Vector3d::UnitZ()) // this +90 or - 270 is needed due to baing caliberated for NWU and missing wrap to pi
-    				* Eigen::AngleAxisd(euler[1], Eigen::Vector3d::UnitY())
-    				* Eigen::AngleAxisd(euler[2], Eigen::Vector3d::UnitX());
-                    ceres::CostFunction* rot_function = RError::Create(q_meas.w(), q_meas.x(), 
-                                                                       q_meas.y(), q_meas.z(),0.01);
-                    //printf("inverse weight %f \n", iterGPS->second[3]);
-                    problem.AddResidualBlock(rot_function, loss_function, q_array[pose_i]);
-				//char test;
-				//cin >> test;
-               }}//newMag
-
-               
-               if(newCloud){
-	               // check times of the pose iterator to only trigger at correct pose
-                    //
-                    if (timeLaserCloud ==t){
- 					flag_lidar_sync = true;	
-                         synced_pose_i = pose_i;		          
- 					cout << "recieved feature cloud with size: " << laserCloudCornerLast->size() << ","<< 
-                         laserCloudSurfLast->size() << "at pose node: " << pose_i << "of" << length <<endl;
-                          
-	                    TicToc t_whole;
-                         // the curertn pose in global map is here : q_array[pose_i], t_array[pose_i];
-                         
-					q_w_curr.w() = q_array[pose_i][0];
-					q_w_curr.x() = q_array[pose_i][1];
-	                    q_w_curr.y() = q_array[pose_i][2];
-	                    q_w_curr.z() = q_array[pose_i][3];
-                         t_w_curr.x() = t_array[pose_i][0];
-					t_w_curr.y() = t_array[pose_i][1];
-                         t_w_curr.z() = t_array[pose_i][2];
-					//mPoseMap.unlock();
-				     
-					// move the octree so there is a 2 cube margin around the current pose for it to grow
-                         // keep the cubeindex of the current pose always >2 or < full size -2 (2 cube margin)
-                         TicToc t_shift;
-					int centerCubeI = int((t_w_curr.x() + 25.0) / 50.0) + laserCloudCenWidth;
-					int centerCubeJ = int((t_w_curr.y() + 25.0) / 50.0) + laserCloudCenHeight;
-					int centerCubeK = int((t_w_curr.z() + 25.0) / 50.0) + laserCloudCenDepth;
-
-					if (t_w_curr.x() + 25.0 < 0)
-						centerCubeI--;
-					if (t_w_curr.y() + 25.0 < 0)
-						centerCubeJ--;
-					if (t_w_curr.z() + 25.0 < 0)
-						centerCubeK--;
-
-					while (centerCubeI < 3)
-					{
-						for (int j = 0; j < laserCloudHeight; j++)
-						{
-							for (int k = 0; k < laserCloudDepth; k++)
-							{ 
-								int i = laserCloudWidth - 1;
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k]; 
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								for (; i >= 1; i--)
-								{
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudCornerArray[i - 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudSurfArray[i - 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								}
-								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeCornerPointer;
-								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeSurfPointer;
-								laserCloudCubeCornerPointer->clear();
-								laserCloudCubeSurfPointer->clear();
-							}
-						}
-
-						centerCubeI++;
-						laserCloudCenWidth++;
-					}
-
-					while (centerCubeI >= laserCloudWidth - 3)
-					{ 
-						for (int j = 0; j < laserCloudHeight; j++)
-						{
-							for (int k = 0; k < laserCloudDepth; k++)
-							{
-								int i = 0;
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								for (; i < laserCloudWidth - 1; i++)
-								{
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudCornerArray[i + 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudSurfArray[i + 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								}
-								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeCornerPointer;
-								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeSurfPointer;
-								laserCloudCubeCornerPointer->clear();
-								laserCloudCubeSurfPointer->clear();
-							}
-						}
-
-						centerCubeI--;
-						laserCloudCenWidth--;
-					}
-
-					while (centerCubeJ < 3)
-					{
-						for (int i = 0; i < laserCloudWidth; i++)
-						{
-							for (int k = 0; k < laserCloudDepth; k++)
-							{
-								int j = laserCloudHeight - 1;
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								for (; j >= 1; j--)
-								{
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudCornerArray[i + laserCloudWidth * (j - 1) + laserCloudWidth * laserCloudHeight * k];
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudSurfArray[i + laserCloudWidth * (j - 1) + laserCloudWidth * laserCloudHeight * k];
-								}
-								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeCornerPointer;
-								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeSurfPointer;
-								laserCloudCubeCornerPointer->clear();
-								laserCloudCubeSurfPointer->clear();
-							}
-						}
-
-						centerCubeJ++;
-						laserCloudCenHeight++;
-					}
-
-					while (centerCubeJ >= laserCloudHeight - 3)
-					{
-						for (int i = 0; i < laserCloudWidth; i++)
-						{
-							for (int k = 0; k < laserCloudDepth; k++)
-							{
-								int j = 0;
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								for (; j < laserCloudHeight - 1; j++)
-								{
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudCornerArray[i + laserCloudWidth * (j + 1) + laserCloudWidth * laserCloudHeight * k];
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudSurfArray[i + laserCloudWidth * (j + 1) + laserCloudWidth * laserCloudHeight * k];
-								}
-								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeCornerPointer;
-								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeSurfPointer;
-								laserCloudCubeCornerPointer->clear();
-								laserCloudCubeSurfPointer->clear();
-							}
-						}
-
-						centerCubeJ--;
-						laserCloudCenHeight--;
-					}
-
-					while (centerCubeK < 3)
-					{
-						for (int i = 0; i < laserCloudWidth; i++)
-						{
-							for (int j = 0; j < laserCloudHeight; j++)
-							{
-								int k = laserCloudDepth - 1;
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								for (; k >= 1; k--)
-								{
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k - 1)];
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k - 1)];
-								}
-								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeCornerPointer;
-								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeSurfPointer;
-								laserCloudCubeCornerPointer->clear();
-								laserCloudCubeSurfPointer->clear();
-							}
-						}
-
-						centerCubeK++;
-						laserCloudCenDepth++;
-					}
-
-					while (centerCubeK >= laserCloudDepth - 3)
-					{
-						for (int i = 0; i < laserCloudWidth; i++)
-						{
-							for (int j = 0; j < laserCloudHeight; j++)
-							{
-								int k = 0;
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-								for (; k < laserCloudDepth - 1; k++)
-								{
-									laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k + 1)];
-									laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-										laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * (k + 1)];
-								}
-								laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeCornerPointer;
-								laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-									laserCloudCubeSurfPointer;
-								laserCloudCubeCornerPointer->clear();
-								laserCloudCubeSurfPointer->clear();
-							}
-						}
-
-						centerCubeK--;
-						laserCloudCenDepth--;
-					}
-                         // end shift the Octree
-                        
-                         printf("Current cube index %d %d %d | for pose %f %f %f\n", centerCubeI, centerCubeJ, centerCubeK, t_w_curr.x(), t_w_curr.y(), t_w_curr.z());  
-                         //find the indexes of the clouds which are in the 2 cube neighbourhood of the current pose
-					laserCloudValidNum = 0;
-					int laserCloudSurroundNum = 0;
-
-					for (int i = centerCubeI - 2; i <= centerCubeI + 2; i++)
-					{
-						for (int j = centerCubeJ - 2; j <= centerCubeJ + 2; j++)
-						{
-							for (int k = centerCubeK - 1; k <= centerCubeK + 1; k++)
-							{
-								if (i >= 0 && i < laserCloudWidth &&
-									j >= 0 && j < laserCloudHeight &&
-									k >= 0 && k < laserCloudDepth)
-								{ 
-									laserCloudValidInd[laserCloudValidNum] = i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k;
-									laserCloudValidNum++;
-									laserCloudSurroundInd[laserCloudSurroundNum] = i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k;
-									laserCloudSurroundNum++;
-								}
-							}
-						}
-					}
-
-
-                         // use those indexes to create a map of the surrounding
-					laserCloudCornerFromMap->clear();
-					laserCloudSurfFromMap->clear();
-
-					for (int i = 0; i < laserCloudValidNum; i++)
-					{
-						*laserCloudCornerFromMap += *laserCloudCornerArray[laserCloudValidInd[i]];
-						*laserCloudSurfFromMap += *laserCloudSurfArray[laserCloudValidInd[i]];
-					}
-					laserCloudCornerFromMapNum = laserCloudCornerFromMap->points.size();
-					laserCloudSurfFromMapNum = laserCloudSurfFromMap->points.size();
-
-                         // include the current laser points in a down sampled pcl cloud   
-                         //mPoseMap.lock();
-					laserCloudCornerStack->clear();
-					downSizeFilterCorner.setInputCloud(laserCloudCornerLast);
-					downSizeFilterCorner.filter(*laserCloudCornerStack);
-					laserCloudCornerStackNum = laserCloudCornerStack->points.size();
-
-					laserCloudSurfStack->clear();
-					downSizeFilterSurf.setInputCloud(laserCloudSurfLast);
-					downSizeFilterSurf.filter(*laserCloudSurfStack);
-					laserCloudSurfStackNum = laserCloudSurfStack->points.size();
-                         //mPoseMap.unlock();
-
-					printf("map prepare time %f ms\n", t_shift.toc());
-					printf("map corner num %d  surf num %d \n", laserCloudCornerFromMapNum, laserCloudSurfFromMapNum);
-                         printf("stack corner num %d  surf num %d \n", laserCloudCornerStackNum, laserCloudSurfStackNum);  
-                         //scan matching - sent to optimization
-                
-					
-
-                         // post optimization steps are resumed after global path update below
-                         //mPoseMap.lock();
-
-                    }//sync-found
-            	}//newCloud	
-
-            }// pose graph iterator    
-            newGPS = false;
-            newRot = false;
-            newMag = false;
-            newCloud = false;
-            newGPSPR = false;
-            mPoseMap.unlock();
-
-		            
-		  if(flag_lidar_sync && laserCloudCornerFromMapNum > 10 && laserCloudSurfFromMapNum > 50){
-			
-			TicToc t_tree;
-               kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMap);
-			kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMap);
-			printf("build tree time %f ms \n", t_tree.toc());			
-			
-			TicToc t_opt;
-			for (int iterCount = 0; iterCount < 2; iterCount++) // iterate twice for ICP- break if no matches
-			{
-				TicToc t_data;
-				int corner_num = 0;
-				for (int i = 0; i < laserCloudCornerStackNum; i++){
-					pointOri = laserCloudCornerStack->points[i];
-					//double sqrtDis = pointOri.x * pointOri.x + pointOri.y * pointOri.y + pointOri.z * pointOri.z;
-					pointAssociateToMap(&pointOri, &pointSel); // warning uses the global t_w_curr
-					kdtreeCornerFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis); // find the nearest 5
-
-					if (pointSearchSqDis[4] < 1.0)
-					{ 
-						std::vector<Eigen::Vector3d> nearCorners;
-						Eigen::Vector3d center(0, 0, 0);
-						// mean of nearest points
-						for (int j = 0; j < 5; j++)
-						{
-							Eigen::Vector3d tmp(laserCloudCornerFromMap->points[pointSearchInd[j]].x,
-											laserCloudCornerFromMap->points[pointSearchInd[j]].y,
-											laserCloudCornerFromMap->points[pointSearchInd[j]].z);
-							center = center + tmp;
-							nearCorners.push_back(tmp);
-						}
-						center = center / 5.0;
-
-						//covariance matrix of nearest points
-						Eigen::Matrix3d covMat = Eigen::Matrix3d::Zero();
-						for (int j = 0; j < 5; j++)
-						{
-							Eigen::Matrix<double, 3, 1> tmpZeroMean = nearCorners[j] - center;
-							covMat = covMat + tmpZeroMean * tmpZeroMean.transpose();
-						}
-
-						Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(covMat);
-
-						// if is indeed line feature ( checks the highest eigen value is larger than 3 times the second smallest)
-						// note Eigen library sort eigenvalues in increasing order
-						Eigen::Vector3d unit_direction = saes.eigenvectors().col(2);
-    						Eigen::Vector3d curr_point_L(pointOri.x, pointOri.y, pointOri.z);
-                               
-                              //O - change the current point to IMU frame  
-                              Eigen::Vector3d curr_point = q_I_L * curr_point_L + t_I_L;                 
-
-						if (saes.eigenvalues()[2] > 3 * saes.eigenvalues()[1])
-						{ 
-							Eigen::Vector3d point_on_line = center;
-							Eigen::Vector3d point_a, point_b;
-							point_a = 0.1 * unit_direction + point_on_line; //find two points to define the line
-							point_b = -0.1 * unit_direction + point_on_line;
-
-							ceres::CostFunction *cost_function = LidarEdgeFactor::Create(curr_point, point_a, point_b, 1.0);
-							problem.AddResidualBlock(cost_function, loss_function, q_array[synced_pose_i], t_array[synced_pose_i]);
-							corner_num++;	
-						}							
-					}
-					/*
-					else if(pointSearchSqDis[4] < 0.01 * sqrtDis)
-					{
-						Eigen::Vector3d center(0, 0, 0);
-						for (int j = 0; j < 5; j++)
-						{
-							Eigen::Vector3d tmp(laserCloudCornerFromMap->points[pointSearchInd[j]].x,
-													laserCloudCornerFromMap->points[pointSearchInd[j]].y,
-													laserCloudCornerFromMap->points[pointSearchInd[j]].z);
-							center = center + tmp;
-						}
-						center = center / 5.0;	
-						Eigen::Vector3d curr_point(pointOri.x, pointOri.y, pointOri.z);
-						ceres::CostFunction *cost_function = LidarDistanceFactor::Create(curr_point, center);
-						problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 4);
-					}
-					*/
-				}
-								
-
-				int surf_num = 0;
-				for (int i = 0; i < laserCloudSurfStackNum; i++)
-				{
-					pointOri = laserCloudSurfStack->points[i];
-					//double sqrtDis = pointOri.x * pointOri.x + pointOri.y * pointOri.y + pointOri.z * pointOri.z;
-					pointAssociateToMap(&pointOri, &pointSel);
-					kdtreeSurfFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
-
-					Eigen::Matrix<double, 5, 3> matA0;
-					Eigen::Matrix<double, 5, 1> matB0 = -1 * Eigen::Matrix<double, 5, 1>::Ones();
-					if (pointSearchSqDis[4] < 1.0)				
-					{						
-						for (int j = 0; j < 5; j++)
-						{
-							matA0(j, 0) = laserCloudSurfFromMap->points[pointSearchInd[j]].x;
-							matA0(j, 1) = laserCloudSurfFromMap->points[pointSearchInd[j]].y;
-							matA0(j, 2) = laserCloudSurfFromMap->points[pointSearchInd[j]].z;
-							//printf(" pts %f %f %f ", matA0(j, 0), matA0(j, 1), matA0(j, 2));
-						}
-						// find the norm of plane
-						Eigen::Vector3d norm = matA0.colPivHouseholderQr().solve(matB0);
-						double negative_OA_dot_norm = 1 / norm.norm();
-						norm.normalize();
-
-						// Here n(pa, pb, pc) is unit norm of plane
-						bool planeValid = true;
-						for (int j = 0; j < 5; j++)
-						{
-							// if OX * n > 0.2, then plane is not fit well
-							if (fabs(norm(0) * laserCloudSurfFromMap->points[pointSearchInd[j]].x +
-								norm(1) * laserCloudSurfFromMap->points[pointSearchInd[j]].y +
-								norm(2) * laserCloudSurfFromMap->points[pointSearchInd[j]].z + negative_OA_dot_norm) > 0.2)
-							{
-								planeValid = false;
-								break;
-							}
-						}
-						Eigen::Vector3d curr_point_L(pointOri.x, pointOri.y, pointOri.z);
-                               
-                              //O - change the current point to IMU frame  
-                              Eigen::Vector3d curr_point = q_I_L * curr_point_L + t_I_L;
-						if (planeValid)
-						{
-							ceres::CostFunction *cost_function = LidarPlaneNormFactor::Create(curr_point, norm, negative_OA_dot_norm);
-							problem.AddResidualBlock(cost_function, loss_function, q_array[synced_pose_i], t_array[synced_pose_i]);
-							surf_num++;
-						}
-					}
-					/*
-					else if(pointSearchSqDis[4] < 0.01 * sqrtDis)
-					{
-						Eigen::Vector3d center(0, 0, 0);
-						for (int j = 0; j < 5; j++)
-						{
-							Eigen::Vector3d tmp(laserCloudSurfFromMap->points[pointSearchInd[j]].x,
-												laserCloudSurfFromMap->points[pointSearchInd[j]].y,
-												laserCloudSurfFromMap->points[pointSearchInd[j]].z);
-							center = center + tmp;
-						}
-						center = center / 5.0;	
-						Eigen::Vector3d curr_point(pointOri.x, pointOri.y, pointOri.z);
-						ceres::CostFunction *cost_function = LidarDistanceFactor::Create(curr_point, center);
-						problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 4);
-					}
-					*/
-				}
-
-				printf("corner num %d used corner num %d \n", laserCloudCornerStackNum, corner_num);
-			     printf("surf num %d used surf num %d \n", laserCloudSurfStackNum, surf_num);
-				printf("mapping data assosiation time %f ms \n", t_data.toc());
-
-				ceres::Solve(options, &problem, &summary);
-
-				if(corner_num<5 && surf_num <5){ // there is not enough associations break
-					ROS_WARN("Insufficient Lidar feature matches");
-					break;
-				}
-			}
-		  }
-		  else{ //this is the update without scan matching
-		  	ROS_WARN("No Lidar update");
-            	ceres::Solve(options, &problem, &summary);
-            	//std::cout << summary.BriefReport() << "\n";
-            }
-            // update global pose
-            mPoseMap.lock();
-            iter = globalPoseMap.begin();
-            for (int i = 0; i < length; i++, iter++)
-            {
-            	vector<double> globalPose{t_array[i][0], t_array[i][1], t_array[i][2],
-            							  q_array[i][0], q_array[i][1], q_array[i][2], q_array[i][3]};
-            	iter->second = globalPose;
-            	if(i == length - 1)
-            	{
-            	    Eigen::Matrix4d WVIO_T_body = Eigen::Matrix4d::Identity(); 
-            	    Eigen::Matrix4d WGPS_T_body = Eigen::Matrix4d::Identity();
-            	    double t = iter->first;
-            	    WVIO_T_body.block<3, 3>(0, 0) = Eigen::Quaterniond(localPoseMap[t][3], localPoseMap[t][4], 
-            	                                                       localPoseMap[t][5], localPoseMap[t][6]).toRotationMatrix();
-            	    WVIO_T_body.block<3, 1>(0, 3) = Eigen::Vector3d(localPoseMap[t][0], localPoseMap[t][1], localPoseMap[t][2]);
-            	    WGPS_T_body.block<3, 3>(0, 0) = Eigen::Quaterniond(globalPose[3], globalPose[4], 
-            	                                                        globalPose[5], globalPose[6]).toRotationMatrix();
-            	    WGPS_T_body.block<3, 1>(0, 3) = Eigen::Vector3d(globalPose[0], globalPose[1], globalPose[2]);
-            	    WGPS_T_WVIO = WGPS_T_body * WVIO_T_body.inverse();
-            	}
-            }
-          
-            updateGlobalPath();
-          
-		  
-
-
-            // completing the rest of the lidar mapping steps
-            if(flag_lidar_sync){
-               // the pose graph is now updated by the optimizer -- retrieve current scan pose
-			q_w_curr.w() = q_array[synced_pose_i][0];
-			q_w_curr.x() = q_array[synced_pose_i][1];
-	          q_w_curr.y() = q_array[synced_pose_i][2];
-	          q_w_curr.z() = q_array[synced_pose_i][3];
-               t_w_curr.x() = t_array[synced_pose_i][0];
-			t_w_curr.y() = t_array[synced_pose_i][1];
-               t_w_curr.z() = t_array[synced_pose_i][2];			
-			
-			// start adding scans to the map			
-			TicToc t_add;
-			for (int i = 0; i < laserCloudCornerStackNum; i++)
-			{
-				pointAssociateToMap(&laserCloudCornerStack->points[i], &pointSel);
-
-				int cubeI = int((pointSel.x + 25.0) / 50.0) + laserCloudCenWidth;
-				int cubeJ = int((pointSel.y + 25.0) / 50.0) + laserCloudCenHeight;
-				int cubeK = int((pointSel.z + 25.0) / 50.0) + laserCloudCenDepth;
-
-				if (pointSel.x + 25.0 < 0)
-					cubeI--;
-				if (pointSel.y + 25.0 < 0)
-					cubeJ--;
-				if (pointSel.z + 25.0 < 0)
-					cubeK--;
-
-				if (cubeI >= 0 && cubeI < laserCloudWidth &&
-					cubeJ >= 0 && cubeJ < laserCloudHeight &&
-					cubeK >= 0 && cubeK < laserCloudDepth)
-				{
-					int cubeInd = cubeI + laserCloudWidth * cubeJ + laserCloudWidth * laserCloudHeight * cubeK;
-					laserCloudCornerArray[cubeInd]->push_back(pointSel);
-				}
-
-				//debugging
-				/*if(i<10){
-					printf("Last cube index %d %d %d | for point %f %f %f | for pose %f %f %f \n", cubeI, cubeJ, cubeK, pointSel.x, pointSel.y, pointSel.z, t_w_curr.x(), t_w_curr.y(), t_w_curr.z() );
-				}*/
-
-			}
-
-			  
-               
-
-			for (int i = 0; i < laserCloudSurfStackNum; i++)
-			{
-				pointAssociateToMap(&laserCloudSurfStack->points[i], &pointSel);
-
-				int cubeI = int((pointSel.x + 25.0) / 50.0) + laserCloudCenWidth;
-				int cubeJ = int((pointSel.y + 25.0) / 50.0) + laserCloudCenHeight;
-				int cubeK = int((pointSel.z + 25.0) / 50.0) + laserCloudCenDepth;
-
-				if (pointSel.x + 25.0 < 0)
-					cubeI--;
-				if (pointSel.y + 25.0 < 0)
-					cubeJ--;
-				if (pointSel.z + 25.0 < 0)
-					cubeK--;
-
-				if (cubeI >= 0 && cubeI < laserCloudWidth &&
-					cubeJ >= 0 && cubeJ < laserCloudHeight &&
-					cubeK >= 0 && cubeK < laserCloudDepth)
-				{
-					int cubeInd = cubeI + laserCloudWidth * cubeJ + laserCloudWidth * laserCloudHeight * cubeK;
-					laserCloudSurfArray[cubeInd]->push_back(pointSel);
-				}
-			}
-			printf("add points time %f ms\n", t_add.toc());
-			
-			TicToc t_filter;
-			for (int i = 0; i < laserCloudValidNum; i++)
-			{
-				int ind = laserCloudValidInd[i];
-
-				pcl::PointCloud<PointType>::Ptr tmpCorner(new pcl::PointCloud<PointType>());
-				downSizeFilterCorner.setInputCloud(laserCloudCornerArray[ind]);
-				downSizeFilterCorner.filter(*tmpCorner);
-				laserCloudCornerArray[ind] = tmpCorner;
-
-				pcl::PointCloud<PointType>::Ptr tmpSurf(new pcl::PointCloud<PointType>());
-				downSizeFilterSurf.setInputCloud(laserCloudSurfArray[ind]);
-				downSizeFilterSurf.filter(*tmpSurf);
-				laserCloudSurfArray[ind] = tmpSurf;
-			}
-			printf("filter time %f ms \n", t_filter.toc());
-
-	          flag_lidar_sync = false;
-		  }
-
-
-		  if(newCloudFullRes){
-			  // use the vio pose to convert the cloud to the global frame and update the pcl cloud	
-                 // set a public pointer of the point cloud 
-                 // use that ot publish the map 
-
-		  }
-
-
-		 // update teh publish cloud
-           
-          printf("global time %f \n", globalOptimizationTime.toc());
-          printf("--------------------------------------- \n");
-          mPoseMap.unlock();
-
-
-		
-           
+                if(newCloudFullRes){
+                                			  // use the vio pose to convert the cloud to the global frame and update the pcl cloud	
+                                                 // set a public pointer of the point cloud 
+                                                 // use that to publish the map 
+                }
+
+
+    		     // update teh publish cloud
+
+                printf("global time %f \n", globalOptimizationTime.toc());
+                printf("--------------------------------------- \n");
+                mPoseMap.unlock();	
+            } // new measurement processing
+            std::chrono::milliseconds dura(2);  // delay 2 milliseconds // should target time - spent time
+            std::this_thread::sleep_for(dura);
+        } //while loop
+        return;
+    } //optimize function 
+
+
+    void GlobalOptimization::updateGlobalPath()
+    {
+        global_path.poses.clear();
+        map<double, vector<double>>::iterator iter;
+        for (iter = globalPoseMap.begin(); iter != globalPoseMap.end(); iter++)
+        {
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header.stamp = ros::Time(iter->first);
+            pose_stamped.header.frame_id = "worldGPS";
+            pose_stamped.pose.position.x = iter->second[0];
+            pose_stamped.pose.position.y = iter->second[1];
+            pose_stamped.pose.position.z = iter->second[2];
+            pose_stamped.pose.orientation.w = iter->second[3];
+            pose_stamped.pose.orientation.x = iter->second[4];
+            pose_stamped.pose.orientation.y = iter->second[5];
+            pose_stamped.pose.orientation.z = iter->second[6];
+            global_path.poses.push_back(pose_stamped);
+            last_update_time = pose_stamped.header.stamp.toSec();
         }
-        std::chrono::milliseconds dura(500);  // delay 2 seconds // should target time - spent time
-        std::this_thread::sleep_for(dura);
+        
+
+        /*gps_path.poses.clear();
+        map<double, vector<double>>::iterator iter3;
+        //cout << "GPS Map size: "<<GPSPositionMap.size() <<endl;//k
+        for (iter3 = GPSPositionMapViz.begin(); iter3 != GPSPositionMapViz.end(); iter3++)
+        {
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header.stamp = ros::Time(iter3->first);
+            pose_stamped.header.frame_id = "worldGPS";
+            pose_stamped.pose.position.x = iter3->second[0];
+            pose_stamped.pose.position.y = iter3->second[1];
+            pose_stamped.pose.position.z = iter3->second[2];
+            pose_stamped.pose.orientation.w = 1.0;
+            pose_stamped.pose.orientation.x = 0.0;
+            pose_stamped.pose.orientation.y = 0.0;
+            pose_stamped.pose.orientation.z = 0.0;
+            gps_path.poses.push_back(pose_stamped);
+        }*/  // moving this visualizaiton part to the gps call back
+
+        ppk_path.poses.clear();
+        map<double, vector<double>>::iterator iter4;
+        //cout << "GPS Map size: "<<GPSPositionMap.size() <<endl;//k
+        for (iter4 = PPKPositionMap.begin(); iter4 != PPKPositionMap.end(); iter4++)
+        {
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header.stamp = ros::Time(iter4->first);
+            pose_stamped.header.frame_id = "worldGPS";
+            pose_stamped.pose.position.x = iter4->second[0];
+            pose_stamped.pose.position.y = iter4->second[1];
+            pose_stamped.pose.position.z = iter4->second[2];
+            pose_stamped.pose.orientation.w = 1.0;
+            pose_stamped.pose.orientation.x = 0.0;
+            pose_stamped.pose.orientation.y = 0.0;
+            pose_stamped.pose.orientation.z = 0.0;
+            ppk_path.poses.push_back(pose_stamped);
+        }
+
+        frl_path.poses.clear();
+        map<double, vector<double>>::iterator iter5;
+        for (iter5 = FRLPoseMap.begin(); iter5 != FRLPoseMap.end(); iter5++)
+        {
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header.stamp = ros::Time(iter5->first);
+            pose_stamped.header.frame_id = "worldGPS";
+            pose_stamped.pose.position.x = iter5->second[0];
+            pose_stamped.pose.position.y = iter5->second[1];
+            pose_stamped.pose.position.z = iter5->second[2];
+            pose_stamped.pose.orientation.w = iter5->second[3];
+            pose_stamped.pose.orientation.x = iter5->second[4];
+            pose_stamped.pose.orientation.y = iter5->second[5];
+            pose_stamped.pose.orientation.z = iter5->second[6];
+            frl_path.poses.push_back(pose_stamped);
+        }
+
+    	//save the path here when value > 6769
+        updateGlobalPathCount++;
+
+        //save results for KITTI evaluation tool
+        int length = globalPoseMap.size();
+        Eigen::Quaterniond odomQ;
+        Eigen::Vector3d odomP;
+        Eigen::Quaterniond gtQ;
+        Eigen::Vector3d gtP;
+        map<double, vector<double>>::iterator iter2;
+        
+        //fusion vs vins
+        iter = localPoseMap.begin();
+        iter2 = globalPoseMap.begin();
+
+
+
+
+         // time sequence check-k  
+        //double time_first = iter->first;
+
+    	//R---------------------------R//
+    	//to save full map
+        Eigen::Quaterniond odomQAll;
+        Eigen::Vector3d odomPAll;
+    	//local pose
+        map<double, vector<double>>::iterator iter_lOdom;
+        iter_lOdom = localPoseMap.begin();
+    	//global pose
+        map<double, vector<double>>::iterator iter_gOdom;
+        iter_gOdom = globalPoseMap.begin();
+    	//write the whole map to a text file
+        map<double, vector<double>>::iterator iterFull_gOdom;
+        iterFull_gOdom = globalPoseMap.begin();
+    	//test opt count
+        int printOnceInTerminal = 1;
+    	//R---------------------------R//
+
+        for(int j = 0;j < GTframeCount; j++, iter++, iter2++){ // go to the current frame
+        }
+        std::ofstream foutC("resultsOdom.txt", std::ios::app);  
+        std::ofstream foutD("resultsGt.txt", std::ios::app);           
+        for (int i = GTframeCount; i < length; i++, iter++, iter2++)
+        {
+
+          GTframeCount++;                
+
+
+          odomP.x() = iter->second[0];
+          odomP.y() = iter->second[1];
+          odomP.z() = iter->second[2];
+          odomQ.w() = iter->second[3];
+          odomQ.x() = iter->second[4];
+          odomQ.y() = iter->second[5];
+          odomQ.z() = iter->second[6];
+
+                    //time sequence check-k 
+    		//std::cout <<  iter->first - time_first << "," << odomP.x() <<  "|" ;  // ok correct time squence saved
+
+          Eigen::Quaterniond globalQ;
+          globalQ = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomQ;
+          Eigen::Vector3d globalP = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomP + WGPS_T_WVIO_viz.block<3, 1>(0, 3);
+
+          if(GTframeCount>0)
+          {
+           Eigen::Matrix3d globalR = globalQ.normalized().toRotationMatrix();   
+           foutC.setf(std::ios::fixed, std::ios::floatfield);
+           foutC.precision(0);
+    			//foutC << header.stamp.toSec() * 1e9 << ",";
+           foutC << GTframeCount << " ";
+           foutC.precision(6);
+           foutC << globalR(0,0) << " "
+           << globalR(0,1) << " "
+           << globalR(0,2) << " "
+           << globalP.x()  << " "
+           << globalR(1,0) << " "
+           << globalR(1,1) << " "
+           << globalR(1,2) << " "
+           << globalP.y()  << " "
+           << globalR(2,0) << " "
+           << globalR(2,1) << " "
+           << globalR(2,2) << " "
+           << globalP.z()  << std::endl;
+
+    			//R----------------------------------R//
+           if(writeToFile)
+           {
+            if(printOnceInTerminal){
+             printOnceInTerminal = 0;
+             std::cout << "Map Update Counter:  " << updateGlobalPathCount << '\n';
+             std::cout << std::to_string(last_GPS) << std::endl;
+         }
+    				if(updateGlobalPathCount >= 10) //bell412_dataset1 - 149|bell412_dataset5 - 136 fusion| dataset3 - 150 | dataset4 - 155
+                    	//if(0) //quarry1-102 | quarry2 - 132 (start-450 stop-269) | quarry3-240
+                 {
+                     int GTframeCountFull = 0;
+    		               //std::ofstream foutG("Fusion_LH.txt", std::ios::app);
+                     std::ofstream foutG("Fusion_bell412_dataset1.txt", std::ios::app);
+                     for(iterFull_gOdom = globalPoseMap.begin(); iterFull_gOdom != globalPoseMap.end(); iterFull_gOdom++)
+                     {
+    		                   //read map
+                         odomPAll.x() = iterFull_gOdom->second[0];
+                         odomPAll.y() = iterFull_gOdom->second[1];
+                         odomPAll.z() = iterFull_gOdom->second[2];
+                         odomQAll.w() = iterFull_gOdom->second[3];
+                         odomQAll.x() = iterFull_gOdom->second[4];
+                         odomQAll.y() = iterFull_gOdom->second[5];
+                         odomQAll.z() = iterFull_gOdom->second[6];
+
+    		                   //calculate pose
+                         Eigen::Quaterniond globalQAll;
+                         globalQAll = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomQAll;
+                         Eigen::Vector3d globalPAll = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomPAll + WGPS_T_WVIO_viz.block<3, 1>(0, 3);
+                         Eigen::Matrix3d globalRAll = globalQAll.normalized().toRotationMatrix();  
+    		                   //std::cout << "Gloabal Rotm: " << globalRAll << std::endl;
+
+                         GTframeCountFull++;
+                         foutG.setf(std::ios::fixed, std::ios::floatfield);
+                         foutG.precision(0);
+                         foutG << GTframeCountFull << " ";
+                         foutG.precision(9);
+    					    //std::cout << std::to_string(last_GPS) << " " << ros::Time(last_GPS) << std::endl;
+    		                   foutG << std::to_string(last_GPS) << " " << "OK" //added time - check
+                             << globalRAll(0,0) << " "
+                             << globalRAll(0,1) << " "
+                             << globalRAll(0,2) << " "
+                             << globalPAll.x()  << " "
+                             << globalRAll(1,0) << " "
+                             << globalRAll(1,1) << " "
+                             << globalRAll(1,2) << " "
+                             << globalPAll.y()  << " "
+                             << globalRAll(2,0) << " "
+                             << globalRAll(2,1) << " "
+                             << globalRAll(2,2) << " "
+                             << globalPAll.z()  << std::endl;
+                         }
+                     }
+
+                 }
+    			//R-------------------------------R//
+             }
+
+             gtP.x() = iter2->second[0];
+             gtP.y() = iter2->second[1];
+             gtP.z() = iter2->second[2];
+             gtQ.w() = iter2->second[3];
+             gtQ.x() = iter2->second[4];
+             gtQ.y() = iter2->second[5];
+             gtQ.z() = iter2->second[6];
+
+
+             if(GTframeCount>0)
+             {
+              Eigen::Matrix3d gtR = gtQ.normalized().toRotationMatrix();   
+              foutD.setf(std::ios::fixed, std::ios::floatfield);
+              foutD.precision(0);
+    		//foutC << header.stamp.toSec() * 1e9 << ",";
+              foutD << GTframeCount << " ";
+              foutD.precision(6);
+              foutD << gtR(0,0) << " "
+              << gtR(0,1) << " "
+              << gtR(0,2) << " "
+              << gtP.x()  << " "
+              << gtR(1,0) << " "
+              << gtR(1,1) << " "
+              << gtR(1,2) << " "
+              << gtP.y()  << " "
+              << gtR(2,0) << " "
+              << gtR(2,1) << " "
+              << gtR(2,2) << " "
+              << gtP.z()  << std::endl;
+          }
+      }
+         // time sequence check -k
+        //std::cout <<  std::endl;
+        //std::cout <<  localPoseMap.end()->first <<std::endl;
+      foutC.close();
+      foutD.close();
+
     }
-	return;
-}
-
-
-void GlobalOptimization::updateGlobalPath()
-{
-    global_path.poses.clear();
-    map<double, vector<double>>::iterator iter;
-    for (iter = globalPoseMap.begin(); iter != globalPoseMap.end(); iter++)
-    {
-        geometry_msgs::PoseStamped pose_stamped;
-        pose_stamped.header.stamp = ros::Time(iter->first);
-        pose_stamped.header.frame_id = "worldGPS";
-        pose_stamped.pose.position.x = iter->second[0];
-        pose_stamped.pose.position.y = iter->second[1];
-        pose_stamped.pose.position.z = iter->second[2];
-        pose_stamped.pose.orientation.w = iter->second[3];
-        pose_stamped.pose.orientation.x = iter->second[4];
-        pose_stamped.pose.orientation.y = iter->second[5];
-        pose_stamped.pose.orientation.z = iter->second[6];
-        global_path.poses.push_back(pose_stamped);
-        last_update_time = pose_stamped.header.stamp.toSec();
-    }
-    
- 
-    gps_path.poses.clear();
-    map<double, vector<double>>::iterator iter3;
-    //cout << "GPS Map size: "<<GPSPositionMap.size() <<endl;//k
-    for (iter3 = GPSPositionMap.begin(); iter3 != GPSPositionMap.end(); iter3++)
-    {
-        geometry_msgs::PoseStamped pose_stamped;
-        pose_stamped.header.stamp = ros::Time(iter3->first);
-        pose_stamped.header.frame_id = "worldGPS";
-        pose_stamped.pose.position.x = iter3->second[0];
-        pose_stamped.pose.position.y = iter3->second[1];
-        pose_stamped.pose.position.z = iter3->second[2];
-        pose_stamped.pose.orientation.w = 1.0;
-        pose_stamped.pose.orientation.x = 0.0;
-        pose_stamped.pose.orientation.y = 0.0;
-        pose_stamped.pose.orientation.z = 0.0;
-        gps_path.poses.push_back(pose_stamped);
-    }
-  
-    ppk_path.poses.clear();
-    map<double, vector<double>>::iterator iter4;
-    //cout << "GPS Map size: "<<GPSPositionMap.size() <<endl;//k
-    for (iter4 = PPKPositionMap.begin(); iter4 != PPKPositionMap.end(); iter4++)
-    {
-        geometry_msgs::PoseStamped pose_stamped;
-        pose_stamped.header.stamp = ros::Time(iter4->first);
-        pose_stamped.header.frame_id = "worldGPS";
-        pose_stamped.pose.position.x = iter4->second[0];
-        pose_stamped.pose.position.y = iter4->second[1];
-        pose_stamped.pose.position.z = iter4->second[2];
-        pose_stamped.pose.orientation.w = 1.0;
-        pose_stamped.pose.orientation.x = 0.0;
-        pose_stamped.pose.orientation.y = 0.0;
-        pose_stamped.pose.orientation.z = 0.0;
-        ppk_path.poses.push_back(pose_stamped);
-    }
-  
-    frl_path.poses.clear();
-    map<double, vector<double>>::iterator iter5;
-    for (iter5 = FRLPoseMap.begin(); iter5 != FRLPoseMap.end(); iter5++)
-    {
-        geometry_msgs::PoseStamped pose_stamped;
-        pose_stamped.header.stamp = ros::Time(iter5->first);
-        pose_stamped.header.frame_id = "worldGPS";
-        pose_stamped.pose.position.x = iter5->second[0];
-        pose_stamped.pose.position.y = iter5->second[1];
-        pose_stamped.pose.position.z = iter5->second[2];
-        pose_stamped.pose.orientation.w = iter5->second[3];
-        pose_stamped.pose.orientation.x = iter5->second[4];
-        pose_stamped.pose.orientation.y = iter5->second[5];
-        pose_stamped.pose.orientation.z = iter5->second[6];
-        frl_path.poses.push_back(pose_stamped);
-    }
-   
-	//save the path here when value > 6769
-	updateGlobalPathCount++;
-
-    //save results for KITTI evaluation tool
-    int length = globalPoseMap.size();
-    Eigen::Quaterniond odomQ;
-    Eigen::Vector3d odomP;
-    Eigen::Quaterniond gtQ;
-    Eigen::Vector3d gtP;
-    map<double, vector<double>>::iterator iter2;
-    
-    //fusion vs vins
-    iter = localPoseMap.begin();
-    iter2 = globalPoseMap.begin();
-
-   
-
-
-     // time sequence check-k  
-    //double time_first = iter->first;
-
-	//R---------------------------R//
-	//to save full map
-	Eigen::Quaterniond odomQAll;
-	Eigen::Vector3d odomPAll;
-	//local pose
-	map<double, vector<double>>::iterator iter_lOdom;
-	iter_lOdom = localPoseMap.begin();
-	//global pose
-	map<double, vector<double>>::iterator iter_gOdom;
-	iter_gOdom = globalPoseMap.begin();
-	//write the whole map to a text file
-	map<double, vector<double>>::iterator iterFull_gOdom;
-	iterFull_gOdom = globalPoseMap.begin();
-	//test opt count
-	int printOnceInTerminal = 1;
-	//R---------------------------R//
-
-    for(int j = 0;j < GTframeCount; j++, iter++, iter2++){ // go to the current frame
-    }
-    std::ofstream foutC("resultsOdom.txt", std::ios::app);  
-    std::ofstream foutD("resultsGt.txt", std::ios::app);           
-    for (int i = GTframeCount; i < length; i++, iter++, iter2++)
-    {
-                
-		GTframeCount++;                
-
-                
-                odomP.x() = iter->second[0];
-                odomP.y() = iter->second[1];
-                odomP.z() = iter->second[2];
-                odomQ.w() = iter->second[3];
-                odomQ.x() = iter->second[4];
-                odomQ.y() = iter->second[5];
-                odomQ.z() = iter->second[6];
-                
-                //time sequence check-k 
-		//std::cout <<  iter->first - time_first << "," << odomP.x() <<  "|" ;  // ok correct time squence saved
-   
-		Eigen::Quaterniond globalQ;
-    		globalQ = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomQ;
-    		Eigen::Vector3d globalP = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomP + WGPS_T_WVIO_viz.block<3, 1>(0, 3);
-   		
-     	if(GTframeCount>0)
-    		{
-			Eigen::Matrix3d globalR = globalQ.normalized().toRotationMatrix();   
-		    	foutC.setf(std::ios::fixed, std::ios::floatfield);
-		    	foutC.precision(0);
-			//foutC << header.stamp.toSec() * 1e9 << ",";
-		           foutC << GTframeCount << " ";
-			foutC.precision(6);
-				         foutC << globalR(0,0) << " "
-					    << globalR(0,1) << " "
-					    << globalR(0,2) << " "
-					    << globalP.x()  << " "
-					    << globalR(1,0) << " "
-					    << globalR(1,1) << " "
-					    << globalR(1,2) << " "
-					    << globalP.y()  << " "
-					    << globalR(2,0) << " "
-					    << globalR(2,1) << " "
-					    << globalR(2,2) << " "
-					    << globalP.z()  << std::endl;
-
-			//R----------------------------------R//
-			if(writeToFile)
-			{
-				if(printOnceInTerminal){
-					printOnceInTerminal = 0;
-                    	std::cout << "Map Update Counter:  " << updateGlobalPathCount << '\n';
-					std::cout << std::to_string(last_GPS) << std::endl;
-                	}
-				if(updateGlobalPathCount >= 10) //bell412_dataset1 - 149|bell412_dataset5 - 136 fusion| dataset3 - 150 | dataset4 - 155
-                	//if(0) //quarry1-102 | quarry2 - 132 (start-450 stop-269) | quarry3-240
-                	{
-		               int GTframeCountFull = 0;
-		               //std::ofstream foutG("Fusion_LH.txt", std::ios::app);
-		               std::ofstream foutG("Fusion_bell412_dataset1.txt", std::ios::app);
-		               for(iterFull_gOdom = globalPoseMap.begin(); iterFull_gOdom != globalPoseMap.end(); iterFull_gOdom++)
-		               {
-		                   //read map
-		                   odomPAll.x() = iterFull_gOdom->second[0];
-		                   odomPAll.y() = iterFull_gOdom->second[1];
-		                   odomPAll.z() = iterFull_gOdom->second[2];
-		                   odomQAll.w() = iterFull_gOdom->second[3];
-		                   odomQAll.x() = iterFull_gOdom->second[4];
-		                   odomQAll.y() = iterFull_gOdom->second[5];
-		                   odomQAll.z() = iterFull_gOdom->second[6];
-
-		                   //calculate pose
-		                   Eigen::Quaterniond globalQAll;
-		                   globalQAll = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomQAll;
-		                   Eigen::Vector3d globalPAll = WGPS_T_WVIO_viz.block<3, 3>(0, 0) * odomPAll + WGPS_T_WVIO_viz.block<3, 1>(0, 3);
-		                   Eigen::Matrix3d globalRAll = globalQAll.normalized().toRotationMatrix();  
-		                   //std::cout << "Gloabal Rotm: " << globalRAll << std::endl;
-
-		                   GTframeCountFull++;
-		                   foutG.setf(std::ios::fixed, std::ios::floatfield);
-		                   foutG.precision(0);
-		                   foutG << GTframeCountFull << " ";
-		                   foutG.precision(9);
-					    //std::cout << std::to_string(last_GPS) << " " << ros::Time(last_GPS) << std::endl;
-		                   foutG << std::to_string(last_GPS) << " " << "OK" //added time - check
-		                       << globalRAll(0,0) << " "
-		                       << globalRAll(0,1) << " "
-		                       << globalRAll(0,2) << " "
-		                       << globalPAll.x()  << " "
-		                       << globalRAll(1,0) << " "
-		                       << globalRAll(1,1) << " "
-		                       << globalRAll(1,2) << " "
-		                       << globalPAll.y()  << " "
-		                       << globalRAll(2,0) << " "
-		                       << globalRAll(2,1) << " "
-		                       << globalRAll(2,2) << " "
-		                       << globalPAll.z()  << std::endl;
-		               }
-               	}
-
-			}
-			//R-------------------------------R//
-    		}
-
-			 gtP.x() = iter2->second[0];
-                gtP.y() = iter2->second[1];
-                gtP.z() = iter2->second[2];
-                gtQ.w() = iter2->second[3];
-                gtQ.x() = iter2->second[4];
-                gtQ.y() = iter2->second[5];
-                gtQ.z() = iter2->second[6];
-    	
-   		
-     	if(GTframeCount>0)
-    		{
-		Eigen::Matrix3d gtR = gtQ.normalized().toRotationMatrix();   
-	    	foutD.setf(std::ios::fixed, std::ios::floatfield);
-	    	foutD.precision(0);
-		//foutC << header.stamp.toSec() * 1e9 << ",";
-                foutD << GTframeCount << " ";
-		foutD.precision(6);
-		              foutD << gtR(0,0) << " "
-				    << gtR(0,1) << " "
-				    << gtR(0,2) << " "
-				    << gtP.x()  << " "
-				    << gtR(1,0) << " "
-				    << gtR(1,1) << " "
-				    << gtR(1,2) << " "
-				    << gtP.y()  << " "
-				    << gtR(2,0) << " "
-				    << gtR(2,1) << " "
-				    << gtR(2,2) << " "
-				    << gtP.z()  << std::endl;
-    		}
-    }
-     // time sequence check -k
-    //std::cout <<  std::endl;
-    //std::cout <<  localPoseMap.end()->first <<std::endl;
-    foutC.close();
-    foutD.close();
-}
